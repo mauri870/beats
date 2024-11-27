@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/gzip"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
@@ -61,6 +62,14 @@ type jsonEncoder struct {
 type gzipEncoder struct {
 	buf    *bytes.Buffer
 	gzip   *gzip.Writer
+	folder *gotype.Iterator
+
+	escapeHTML bool
+}
+
+type brotliEncoder struct {
+	buf    *bytes.Buffer
+	w      *brotli.Writer
 	folder *gotype.Iterator
 
 	escapeHTML bool
@@ -240,5 +249,90 @@ func (g *gzipEncoder) Add(meta, obj interface{}) error {
 	}
 
 	g.gzip.Flush()
+	return nil
+}
+
+func NewBrotliEncoder(level int, buf *bytes.Buffer, escapeHTML bool) (*brotliEncoder, error) {
+	if buf == nil {
+		buf = bytes.NewBuffer(nil)
+	}
+	w := brotli.NewWriterLevel(buf, level)
+
+	g := &brotliEncoder{buf: buf, w: w, escapeHTML: escapeHTML}
+	g.resetState()
+	return g, nil
+}
+
+func (g *brotliEncoder) resetState() {
+	var err error
+	visitor := json.NewVisitor(g.w)
+	visitor.SetEscapeHTML(g.escapeHTML)
+
+	g.folder, err = gotype.NewIterator(visitor,
+		gotype.Folders(
+			codec.MakeTimestampEncoder(),
+			codec.MakeBCTimestampEncoder()))
+	if err != nil {
+		panic(err)
+	}
+}
+
+func (g *brotliEncoder) Reset() {
+	g.buf.Reset()
+	g.w.Reset(g.buf)
+}
+
+func (g *brotliEncoder) Reader() io.Reader {
+	g.w.Close()
+	return g.buf
+}
+
+func (g *brotliEncoder) AddHeader(header *http.Header) {
+	header.Add("Content-Type", "application/json; charset=UTF-8")
+	header.Add("Content-Encoding", "br")
+}
+
+func (g *brotliEncoder) Marshal(obj interface{}) error {
+	g.Reset()
+	return g.AddRaw(obj)
+}
+
+func (g *brotliEncoder) AddRaw(obj interface{}) error {
+	var err error
+	switch v := obj.(type) {
+	case beat.Event:
+		err = g.folder.Fold(event{Timestamp: v.Timestamp, Fields: v.Fields})
+	case *beat.Event:
+		err = g.folder.Fold(event{Timestamp: v.Timestamp, Fields: v.Fields})
+	case RawEncoding:
+		_, err = g.w.Write(v.Encoding)
+	default:
+		err = g.folder.Fold(obj)
+	}
+
+	if err != nil {
+		g.resetState()
+	}
+
+	_, err = g.w.Write(nl)
+	if err != nil {
+		g.resetState()
+	}
+
+	return nil
+}
+
+func (g *brotliEncoder) Add(meta, obj interface{}) error {
+	pos := g.buf.Len()
+	if err := g.AddRaw(meta); err != nil {
+		g.buf.Truncate(pos)
+		return err
+	}
+	if err := g.AddRaw(obj); err != nil {
+		g.buf.Truncate(pos)
+		return err
+	}
+
+	g.w.Flush()
 	return nil
 }

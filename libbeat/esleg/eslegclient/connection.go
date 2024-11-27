@@ -136,7 +136,9 @@ func NewConnection(s ConnectionSettings) (*Connection, error) {
 	if compression == 0 {
 		encoder = NewJSONEncoder(nil, s.EscapeHTML)
 	} else {
-		encoder, err = NewGzipEncoder(compression, nil, s.EscapeHTML)
+		// 6 is the brotli default compression
+		encoder, err = NewBrotliEncoder(6, nil, s.EscapeHTML)
+		// encoder, err = NewGzipEncoder(compression, nil, s.EscapeHTML)
 		if err != nil {
 			return nil, err
 		}

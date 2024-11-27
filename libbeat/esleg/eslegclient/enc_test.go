@@ -18,9 +18,12 @@
 package eslegclient
 
 import (
+	"compress/gzip"
+	"encoding/json"
 	"testing"
 	"time"
 
+	"github.com/andybalholm/brotli"
 	"github.com/stretchr/testify/assert"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
@@ -60,4 +63,35 @@ func TestJSONEncoderMarshalMonitoringEvent(t *testing.T) {
 	}
 	assert.Equal(t, encoder.buf.String(), "{\"timestamp\":\"2017-11-07T12:00:00.000Z\",\"field1\":\"value1\"}\n",
 		"Unexpected marshaled format of report.Event")
+}
+
+func BenchmarkEncoder(b *testing.B) {
+	// TODO: use a more realistic beats event for benchmarking
+	event := beat.Event{
+		Timestamp: time.Date(2017, time.November, 7, 12, 0, 0, 0, time.UTC),
+		Fields: mapstr.M{
+			"field1": "value1",
+		},
+	}
+
+	data, err := json.Marshal(event)
+	assert.NoError(b, err)
+
+	b.Run("GzipEncoder", func(b *testing.B) {
+		encoder, error := NewGzipEncoder(gzip.DefaultCompression, nil, false)
+		assert.NoError(b, error)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			encoder.Marshal(data)
+		}
+	})
+
+	b.Run("BrotliEncoder", func(b *testing.B) {
+		encoder, error := NewBrotliEncoder(brotli.DefaultCompression, nil, false)
+		assert.NoError(b, error)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			encoder.Marshal(data)
+		}
+	})
 }

@@ -171,6 +171,7 @@ require (
 	github.com/Azure/azure-storage-blob-go v0.15.0
 	github.com/Azure/go-autorest/autorest/adal v0.9.24
 	github.com/aerospike/aerospike-client-go/v7 v7.7.1
+	github.com/andybalholm/brotli v1.1.0
 	github.com/apache/arrow/go/v17 v17.0.0
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.16.12
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.17.13
@@ -251,7 +252,6 @@ require (
 	github.com/Azure/go-ntlmssp v0.0.0-20221128193559-754e69321358 // indirect
 	github.com/AzureAD/microsoft-authentication-library-for-go v1.2.2 // indirect
 	github.com/JohnCGriffin/overflow v0.0.0-20211019200055-46fa312c352c // indirect
-	github.com/andybalholm/brotli v1.1.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.0 // indirect
 	github.com/apache/arrow/go/v15 v15.0.2 // indirect
 	github.com/apache/thrift v0.20.0 // indirect

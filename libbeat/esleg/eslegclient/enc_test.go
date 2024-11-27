@@ -94,4 +94,13 @@ func BenchmarkEncoder(b *testing.B) {
 			encoder.Marshal(data)
 		}
 	})
+
+	b.Run("LZ4Encoder", func(b *testing.B) {
+		encoder, error := NewLZ4Encoder(1 /*=fastest*/, nil, false)
+		assert.NoError(b, error)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			encoder.Marshal(data)
+		}
+	})
 }

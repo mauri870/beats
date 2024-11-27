@@ -26,6 +26,7 @@ import (
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/gzip"
+	"github.com/pierrec/lz4/v4"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/outputs/codec"
@@ -70,6 +71,14 @@ type gzipEncoder struct {
 type brotliEncoder struct {
 	buf    *bytes.Buffer
 	w      *brotli.Writer
+	folder *gotype.Iterator
+
+	escapeHTML bool
+}
+
+type lz4Encoder struct {
+	buf    *bytes.Buffer
+	w      *lz4.Writer
 	folder *gotype.Iterator
 
 	escapeHTML bool
@@ -323,6 +332,121 @@ func (g *brotliEncoder) AddRaw(obj interface{}) error {
 }
 
 func (g *brotliEncoder) Add(meta, obj interface{}) error {
+	pos := g.buf.Len()
+	if err := g.AddRaw(meta); err != nil {
+		g.buf.Truncate(pos)
+		return err
+	}
+	if err := g.AddRaw(obj); err != nil {
+		g.buf.Truncate(pos)
+		return err
+	}
+
+	g.w.Flush()
+	return nil
+}
+
+func NewLZ4Encoder(level int, buf *bytes.Buffer, escapeHTML bool) (*lz4Encoder, error) {
+	if buf == nil {
+		buf = bytes.NewBuffer(nil)
+	}
+	w := lz4.NewWriter(buf)
+
+	var lvl lz4.CompressionLevel
+	switch level {
+	default:
+		fallthrough
+	case 0:
+		lvl = lz4.Fast
+	case 1:
+		lvl = lz4.Level1
+	case 2:
+		lvl = lz4.Level2
+	case 3:
+		lvl = lz4.Level3
+	case 4:
+		lvl = lz4.Level4
+	case 5:
+		lvl = lz4.Level5
+	case 6:
+		lvl = lz4.Level6
+	case 7:
+		lvl = lz4.Level7
+	case 8:
+		lvl = lz4.Level8
+	case 9:
+		lvl = lz4.Level9
+	}
+	w.Apply([]lz4.Option{
+		lz4.CompressionLevelOption(lvl),
+		lz4.ConcurrencyOption(-1),
+	}...)
+
+	g := &lz4Encoder{buf: buf, w: w, escapeHTML: escapeHTML}
+	g.resetState()
+	return g, nil
+}
+
+func (g *lz4Encoder) resetState() {
+	var err error
+	visitor := json.NewVisitor(g.w)
+	visitor.SetEscapeHTML(g.escapeHTML)
+
+	g.folder, err = gotype.NewIterator(visitor,
+		gotype.Folders(
+			codec.MakeTimestampEncoder(),
+			codec.MakeBCTimestampEncoder()))
+	if err != nil {
+		panic(err)
+	}
+}
+
+func (g *lz4Encoder) Reset() {
+	g.buf.Reset()
+	g.w.Reset(g.buf)
+}
+
+func (g *lz4Encoder) Reader() io.Reader {
+	g.w.Close()
+	return g.buf
+}
+
+func (g *lz4Encoder) AddHeader(header *http.Header) {
+	header.Add("Content-Type", "application/json; charset=UTF-8")
+	header.Add("Content-Encoding", "lz4")
+}
+
+func (g *lz4Encoder) Marshal(obj interface{}) error {
+	g.Reset()
+	return g.AddRaw(obj)
+}
+
+func (g *lz4Encoder) AddRaw(obj interface{}) error {
+	var err error
+	switch v := obj.(type) {
+	case beat.Event:
+		err = g.folder.Fold(event{Timestamp: v.Timestamp, Fields: v.Fields})
+	case *beat.Event:
+		err = g.folder.Fold(event{Timestamp: v.Timestamp, Fields: v.Fields})
+	case RawEncoding:
+		_, err = g.w.Write(v.Encoding)
+	default:
+		err = g.folder.Fold(obj)
+	}
+
+	if err != nil {
+		g.resetState()
+	}
+
+	_, err = g.w.Write(nl)
+	if err != nil {
+		g.resetState()
+	}
+
+	return nil
+}
+
+func (g *lz4Encoder) Add(meta, obj interface{}) error {
 	pos := g.buf.Len()
 	if err := g.AddRaw(meta); err != nil {
 		g.buf.Truncate(pos)

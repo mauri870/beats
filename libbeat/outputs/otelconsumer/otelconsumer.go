@@ -20,6 +20,7 @@ package otelconsumer
 import (
 	"context"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/elastic/beats/v7/libbeat/beat"
@@ -93,6 +94,18 @@ func (out *otelConsumer) logsPublish(ctx context.Context, batch publisher.Batch)
 		meta["type"] = "_doc"
 
 		beatEvent := event.Content.Fields.Clone()
+
+		// The receivertest package needs a unique "test_id" attribute
+		// per log record.
+		// When receivertest allows this to be customized we can remove this condition.
+		// See https://github.com/open-telemetry/opentelemetry-collector/issues/12003.
+		if os.Getenv("OTELCONSUMER_RECEIVERTEST") == "true" {
+			id, ok := meta["_id"].(string)
+			if ok {
+				logRecord.Attributes().PutStr("test_id", id)
+			}
+		}
+
 		beatEvent["@timestamp"] = event.Content.Timestamp
 		beatEvent["@metadata"] = meta
 		logRecord.SetTimestamp(pcommon.NewTimestampFromTime(event.Content.Timestamp))
@@ -113,6 +126,8 @@ func (out *otelConsumer) logsPublish(ctx context.Context, batch publisher.Batch)
 			batch.Drop()
 		} else {
 			st.RetryableErrors(len(events))
+			// TODO(mauri870): We have tests that prove this path is taken on error as expected.
+			// Why is otelconsumer never called again as part of the retry process?
 			batch.Retry()
 		}
 

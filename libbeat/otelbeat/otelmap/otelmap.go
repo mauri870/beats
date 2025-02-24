@@ -37,140 +37,137 @@ func FromMapstr(m mapstr.M) pcommon.Map {
 	out := pcommon.NewMap()
 	for k, v := range m {
 		switch x := v.(type) {
-		case string:
-			out.PutStr(k, x)
 		case []string:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]string) {
-				newVal := dest.AppendEmpty()
-				newVal.SetStr(i)
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case int:
-			out.PutInt(k, int64(v.(int)))
 		case []int:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]int) {
-				newVal := dest.AppendEmpty()
-				newVal.SetInt(int64(i))
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case int8:
-			out.PutInt(k, int64(v.(int8)))
 		case []int8:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]int8) {
-				newVal := dest.AppendEmpty()
-				newVal.SetInt(int64(i))
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case int16:
-			out.PutInt(k, int64(v.(int16)))
 		case []int16:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]int16) {
-				newVal := dest.AppendEmpty()
-				newVal.SetInt(int64(i))
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case int32:
-			out.PutInt(k, int64(v.(int32)))
 		case []int32:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]int32) {
-				newVal := dest.AppendEmpty()
-				newVal.SetInt(int64(i))
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case int64:
-			out.PutInt(k, v.(int64))
 		case []int64:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]int64) {
-				newVal := dest.AppendEmpty()
-				newVal.SetInt(i)
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case uint:
-			out.PutInt(k, int64(v.(uint)))
 		case []uint:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]uint) {
-				newVal := dest.AppendEmpty()
-				newVal.SetInt(int64(i))
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case uint8:
-			out.PutInt(k, int64(v.(uint8)))
 		case []uint8:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]uint8) {
-				newVal := dest.AppendEmpty()
-				newVal.SetInt(int64(i))
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case uint16:
-			out.PutInt(k, int64(v.(uint16)))
 		case []uint16:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]uint16) {
-				newVal := dest.AppendEmpty()
-				newVal.SetInt(int64(i))
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case uint32:
-			out.PutInt(k, int64(v.(uint32)))
 		case []uint32:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]uint32) {
-				newVal := dest.AppendEmpty()
-				newVal.SetInt(int64(i))
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case uint64:
-			out.PutInt(k, int64(v.(uint64)))
 		case []uint64:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]uint64) {
-				newVal := dest.AppendEmpty()
-				newVal.SetInt(int64(i))
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case float32:
-			out.PutDouble(k, float64(v.(float32)))
 		case []float32:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]float32) {
-				newVal := dest.AppendEmpty()
-				newVal.SetDouble(float64(i))
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case float64:
-			out.PutDouble(k, v.(float64))
 		case []float64:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]float64) {
-				newVal := dest.AppendEmpty()
-				newVal.SetDouble(i)
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case bool:
-			out.PutBool(k, x)
 		case []bool:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]bool) {
-				newVal := dest.AppendEmpty()
-				newVal.SetBool(i)
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
 			}
-		case mapstr.M:
-			dest := out.PutEmptyMap(k)
-			newMap := FromMapstr(x)
-			newMap.CopyTo(dest)
+		case []any:
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
+			}
+		case []time.Time:
+			ss := out.PutEmptySlice(k)
+			for _, sv := range x {
+				anyToPcommonValue(sv).CopyTo(ss.AppendEmpty())
+			}
 		case []mapstr.M:
 			dest := out.PutEmptySlice(k)
 			for _, i := range v.([]mapstr.M) {
-				newVal := dest.AppendEmpty()
-				newMap := FromMapstr(i)
-				newMap.CopyTo(newVal.SetEmptyMap())
+				FromMapstr(i).CopyTo(dest.AppendEmpty().SetEmptyMap())
 			}
-		case time.Time:
-			out.PutStr(k, x.UTC().Format("2006-01-02T15:04:05.000Z"))
-		case []time.Time:
-			dest := out.PutEmptySlice(k)
-			for _, i := range v.([]time.Time) {
-				newVal := dest.AppendEmpty()
-				newVal.SetStr(i.UTC().Format("2006-01-02T15:04:05.000Z"))
-			}
+		case mapstr.M:
+			FromMapstr(x).CopyTo(out.PutEmptyMap(k))
 		default:
-			out.PutStr(k, fmt.Sprintf("unknown type: %T", x))
+			anyToPcommonValue(x).CopyTo(out.PutEmpty(k))
 		}
 	}
 	return out
+}
+
+func toSlice(v []any) {
+	println(v)
+}
+
+func anyToPcommonValue(v any) pcommon.Value {
+	switch x := v.(type) {
+	case string:
+		return pcommon.NewValueStr(x)
+	case int:
+		return pcommon.NewValueInt(int64(x))
+	case int8:
+		return pcommon.NewValueInt(int64(x))
+	case int16:
+		return pcommon.NewValueInt(int64(x))
+	case int32:
+		return pcommon.NewValueInt(int64(x))
+	case int64:
+		return pcommon.NewValueInt(x)
+	case uint:
+		return pcommon.NewValueInt(int64(x))
+	case uint8:
+		return pcommon.NewValueInt(int64(x))
+	case uint16:
+		return pcommon.NewValueInt(int64(x))
+	case uint32:
+		return pcommon.NewValueInt(int64(x))
+	case uint64:
+		return pcommon.NewValueInt(int64(x))
+	case float32:
+		return pcommon.NewValueDouble(float64(x))
+	case float64:
+		return pcommon.NewValueDouble(float64(x))
+	case bool:
+		return pcommon.NewValueBool(x)
+	case time.Time:
+		return pcommon.NewValueStr(x.UTC().Format("2006-01-02T15:04:05.000Z"))
+	default:
+		return pcommon.NewValueStr(fmt.Sprintf("unknown type: %T", x))
+	}
 }

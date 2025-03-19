@@ -22,9 +22,13 @@ import (
 	"compress/zlib"
 	"encoding/base64"
 	"sort"
+	"sync"
 
 	"github.com/elastic/elastic-agent-libs/iobuf"
 )
+
+var assetCacheMu sync.RWMutex
+var assetCache = map[string][]byte{}
 
 // FieldsRegistry contains a list of fields.yml files
 // As each entry is an array of bytes multiple fields.yml can be added under one path.
@@ -105,8 +109,25 @@ func EncodeData(data string) (string, error) {
 	return base64.StdEncoding.EncodeToString(zlibBuf.Bytes()), nil
 }
 
+func getAssetCache(data string) ([]byte, bool) {
+	assetCacheMu.RLock()
+	defer assetCacheMu.RUnlock()
+	cached, ok := assetCache[data]
+	return cached, ok
+}
+
+func setAssetCache(data string, out []byte) {
+	assetCacheMu.Lock()
+	defer assetCacheMu.Unlock()
+	assetCache[data] = out
+}
+
 // DecodeData base64 decodes the data and uncompresses it
 func DecodeData(data string) ([]byte, error) {
+	if cached, ok := getAssetCache(data); ok {
+		return cached, nil
+	}
+
 	decoded, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
 		return nil, err
@@ -119,5 +140,11 @@ func DecodeData(data string) ([]byte, error) {
 	}
 	defer r.Close()
 
-	return iobuf.ReadAll(r)
+	out, err := iobuf.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+
+	setAssetCache(data, out)
+	return out, nil
 }

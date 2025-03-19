@@ -5,7 +5,6 @@
 package fbreceiver
 
 import (
-	"bytes"
 	"context"
 	"testing"
 
@@ -17,6 +16,7 @@ import (
 	"go.opentelemetry.io/collector/receiver"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
+	"go.uber.org/zap/zaptest"
 	"go.uber.org/zap/zaptest/observer"
 )
 
@@ -141,10 +141,9 @@ func BenchmarkFactory(b *testing.B) {
 		},
 	}
 
-	var zapLogs bytes.Buffer
 	core := zapcore.NewCore(
 		zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
-		zapcore.Lock(zapcore.AddSync(&zapLogs)),
+		&zaptest.Discarder{},
 		zapcore.DebugLevel)
 
 	receiverSettings := receiver.Settings{}

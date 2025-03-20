@@ -9,6 +9,7 @@ import (
 
 	v2 "github.com/elastic/beats/v7/filebeat/input/v2"
 	inputcursor "github.com/elastic/beats/v7/filebeat/input/v2/input-cursor"
+	"github.com/elastic/beats/v7/libbeat/statestore"
 	conf "github.com/elastic/elastic-agent-libs/config"
 	"github.com/elastic/elastic-agent-libs/logp"
 )
@@ -22,7 +23,7 @@ type InputManager struct {
 
 var _ v2.InputManager = InputManager{}
 
-func NewInputManager(log *logp.Logger, store inputcursor.StateStore) InputManager {
+func NewInputManager(log *logp.Logger, store statestore.States) InputManager {
 	return InputManager{
 		cursor: &inputcursor.InputManager{
 			Logger:     log,
@@ -38,7 +39,6 @@ func cursorConfigure(cfg *conf.C) ([]inputcursor.Source, inputcursor.Input, erro
 	if err := cfg.Unpack(&src.cfg); err != nil {
 		return nil, nil, err
 	}
-
 	if src.cfg.Program == "" {
 		// set default program
 		src.cfg.Program = `

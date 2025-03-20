@@ -88,6 +88,7 @@ func Package() error {
 				spec.OS = target.GOOS()
 				spec.Arch = packageArch
 				spec.Snapshot = Snapshot
+				spec.FIPS = FIPSBuild
 				spec.evalContext = map[string]interface{}{
 					"GOOS":          target.GOOS(),
 					"GOARCH":        target.GOARCH(),
@@ -172,7 +173,6 @@ func prepareIronbankBuild() error {
 		}
 		return nil
 	})
-
 	if err != nil {
 		return fmt.Errorf("cannot create templates for the IronBank: %w", err)
 	}
@@ -206,7 +206,7 @@ func saveIronbank() error {
 
 	distributionsDir := "build/distributions"
 	if _, err := os.Stat(distributionsDir); os.IsNotExist(err) {
-		err := os.MkdirAll(distributionsDir, 0750)
+		err := os.MkdirAll(distributionsDir, 0o750)
 		if err != nil {
 			return fmt.Errorf("cannot create folder for docker artifacts: %w", err)
 		}
@@ -247,11 +247,11 @@ type packageBuilder struct {
 }
 
 func (b packageBuilder) Build() error {
-	fmt.Printf(">> package: Building %v type=%v for platform=%v\n", b.Spec.Name, b.Type, b.Platform.Name)
+	fmt.Printf(">> package: Building %v type=%v for platform=%v fips=%v\n", b.Spec.Name, b.Type, b.Platform.Name, b.Spec.FIPS)
 	log.Printf("Package spec: %+v", b.Spec)
 	if err := b.Type.Build(b.Spec); err != nil {
-		return fmt.Errorf("failed building %v type=%v for platform=%v: %w",
-			b.Spec.Name, b.Type, b.Platform.Name, err)
+		return fmt.Errorf("failed building %v type=%v for platform=%v fips=%v: %w",
+			b.Spec.Name, b.Type, b.Platform.Name, b.Spec.FIPS, err)
 	}
 	return nil
 }
@@ -345,12 +345,14 @@ func TestPackages(options ...TestPackagesOption) error {
 		args = append(args, "-root-owner")
 	}
 
+	if FIPSBuild {
+		args = append(args, "-fips")
+	}
+
 	args = append(args, "-files", MustExpand("{{.PWD}}/build/distributions/*"))
 
 	if out, err := goTest(args...); err != nil {
-		if !mg.Verbose() {
-			fmt.Println(out)
-		}
+		fmt.Println(out)
 		return err
 	}
 

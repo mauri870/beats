@@ -13,10 +13,10 @@ import (
 	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/ratelimit"
 
-	"github.com/elastic/beats/v7/filebeat/beater"
 	v2 "github.com/elastic/beats/v7/filebeat/input/v2"
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/common/backoff"
+	"github.com/elastic/beats/v7/libbeat/statestore"
 	"github.com/elastic/elastic-agent-libs/logp"
 	"github.com/elastic/go-concert/timed"
 )
@@ -30,24 +30,25 @@ type s3PollerInput struct {
 	pipeline        beat.Pipeline
 	config          config
 	awsConfig       awssdk.Config
-	store           beater.StateStore
+	store           statestore.States
 	provider        string
 	s3              s3API
 	metrics         *inputMetrics
 	s3ObjectHandler s3ObjectHandlerFactory
 	states          *states
+	filterProvider  *filterProvider
 }
 
 func newS3PollerInput(
 	config config,
 	awsConfig awssdk.Config,
-	store beater.StateStore,
+	store statestore.States,
 ) (v2.Input, error) {
-
 	return &s3PollerInput{
-		config:    config,
-		awsConfig: awsConfig,
-		store:     store,
+		config:         config,
+		awsConfig:      awsConfig,
+		store:          store,
+		filterProvider: newFilterProvider(&config),
 	}, nil
 }
 
@@ -199,8 +200,9 @@ func (in *s3PollerInput) workerLoop(ctx context.Context, workChan <-chan state) 
 // These IDs are intended to be used for state clean-up.
 func (in *s3PollerInput) readerLoop(ctx context.Context, workChan chan<- state) (knownStateIDSlice []string, ok bool) {
 	defer close(workChan)
-
 	bucketName := getBucketNameFromARN(in.config.getBucketARN())
+
+	isStateValid := in.filterProvider.getApplierFunc()
 
 	errorBackoff := backoff.NewEqualJitterBackoff(ctx.Done(), 1, 120)
 	circuitBreaker := 0
@@ -233,10 +235,14 @@ func (in *s3PollerInput) readerLoop(ctx context.Context, workChan chan<- state) 
 		in.metrics.s3ObjectsListedTotal.Add(uint64(totListedObjects))
 		for _, object := range page.Contents {
 			state := newState(bucketName, *object.Key, *object.ETag, *object.LastModified)
-			knownStateIDSlice = append(knownStateIDSlice, state.ID())
+			if !isStateValid(in.log, state) {
+				continue
+			}
 
+			// add to known states only if valid for processing
+			knownStateIDSlice = append(knownStateIDSlice, state.ID())
 			if in.states.IsProcessed(state) {
-				in.log.Debugw("skipping state.", "state", state)
+				in.log.Debugw("skipping state processing as already processed.", "state", state)
 				continue
 			}
 

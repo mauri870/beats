@@ -41298,11 +41298,11 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 --------------------------------------------------------------------------------
 Dependency : github.com/golang-sql/civil
-Version: v0.0.0-20190719163853-cb61b32ac6fe
+Version: v0.0.0-20220223132316-b832511892a9
 Licence type (autodetected): Apache-2.0
 --------------------------------------------------------------------------------
 
-Contents of probable licence file $GOMODCACHE/github.com/golang-sql/civil@v0.0.0-20190719163853-cb61b32ac6fe/LICENSE:
+Contents of probable licence file $GOMODCACHE/github.com/golang-sql/civil@v0.0.0-20220223132316-b832511892a9/LICENSE:
 
 
                                  Apache License

@@ -94,10 +94,17 @@ func TestNewReceiver(t *testing.T) {
 		AssertFunc: func(c *assert.CollectT, logs map[string][]mapstr.M, zapLogs *observer.ObservedLogs) {
 			_ = zapLogs
 			require.Conditionf(c, func() bool {
-				return len(logs["r1"]) > 0
+				return len(logs["r1"]) > 4 // one per metricset
 			}, "expected at least one ingest log, got logs: %v", logs["r1"])
 
-			require.Equal(t, "", cmp.Diff(logs["r1"][0], mapstr.M{}))
+			for _, log := range logs["r1"] {
+				_, ok := log.Flatten()["event.duration"]
+				assert.True(c, ok, "event.duration not found in log")
+				if !ok {
+					require.Equal(t, "", cmp.Diff(logs, mapstr.M{}))
+				}
+			}
+
 			var lastError strings.Builder
 			assert.Conditionf(c, func() bool {
 				return getFromSocket(t, &lastError, monitorSocket)

@@ -21,6 +21,7 @@ import (
 
 	"github.com/elastic/beats/v7/libbeat/otelbeat/oteltest"
 	"github.com/elastic/elastic-agent-libs/mapstr"
+	"github.com/google/go-cmp/cmp"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,11 +46,24 @@ func TestNewReceiver(t *testing.T) {
 			"metricbeat": map[string]any{
 				"modules": []map[string]any{
 					{
-						"module":     "system",
-						"enabled":    true,
-						"period":     "1s",
-						"processes":  []string{".*"},
-						"metricsets": []string{"cpu"},
+						"module":      "system",
+						"data_stream": map[string]any{"dataset": "generic-1"},
+						"id":          "test-1",
+						"index":       "metrics-generic-1-default",
+						"metricsets": map[string]any{
+							"cpu": map[string]any{
+								"data_stream.dataset": "system.cpu",
+							},
+							"memory": map[string]any{
+								"data_stream.dataset": "system.memory",
+							},
+							"network": map[string]any{
+								"data_stream.dataset": "system.network",
+							},
+							"filesystem": map[string]any{
+								"data_stream.dataset": "system.filesystem",
+							},
+						},
 					},
 				},
 			},
@@ -82,6 +96,8 @@ func TestNewReceiver(t *testing.T) {
 			require.Conditionf(c, func() bool {
 				return len(logs["r1"]) > 0
 			}, "expected at least one ingest log, got logs: %v", logs["r1"])
+
+			require.Equal(t, "", cmp.Diff(logs["r1"][0], mapstr.M{}))
 			var lastError strings.Builder
 			assert.Conditionf(c, func() bool {
 				return getFromSocket(t, &lastError, monitorSocket)

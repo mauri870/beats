@@ -377,7 +377,7 @@ service:
   pipelines:
     logs:
       receivers:
-        - filebeatreceiver
+        - filebeatreceiver/1
       exporters:
         - elasticsearch/log
         - debug

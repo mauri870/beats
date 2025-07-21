@@ -61,7 +61,7 @@ func validateCmd() *cobra.Command {
 
 			if !result.Valid() {
 				for _, desc := range result.Errors() {
-					fmt.Fprintf(cmd.ErrOrStderr(), "%s\n", desc)
+					fmt.Fprintln(cmd.ErrOrStderr(), desc)
 				}
 
 				return fmt.Errorf("%s is invalid", configFile)

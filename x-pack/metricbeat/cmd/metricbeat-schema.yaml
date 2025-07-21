@@ -1,443 +1,51 @@
-$schema: https://json-schema.org/draft/2019-09/schema
-$id: https://json-schema.org/draft/2019-09/schema
+$schema: http://json-schema.org/draft-07/schema
 type: object
-title: BenchBuilder usecase configuration.
-description: This schema defines the configuration for BenchBuilder use cases, including output settings, hooks, and benchmark blueprints.
+title: Metricbeat Configuration Schema
+description: Schema for Metricbeat configuration files
 properties:
-  output:
+  metricbeat.config.modules:
     type: object
-    description: Configuration for output destinations where benchmark data will be sent
+    description: Configuration for Metricbeat modules
     properties:
-      elasticsearch:
-        $ref: "#/$defs/elasticsearch_output"
-      victoria_metrics:
-        $ref: "#/$defs/victoria_metrics_output"
-      mimir:
-        $ref: "#/$defs/mimir_output"
-  hooks:
-    type: object
-    properties:
-      pre_start:
-        type: array
-        items:
-          $ref: "#/$defs/hook"
-      pre_suite:
-        type: array
-        items:
-          $ref: "#/$defs/hook"
-      pre_benchmark:
-        type: array
-        items:
-          $ref: "#/$defs/hook"
-      post_benchmark:
-        type: array
-        items:
-          $ref: "#/$defs/hook"
-      post_suite:
-        type: array
-        items:
-          $ref: "#/$defs/hook"
-  blueprint:
-    type: object
-    description: "This is the base describing your benchmark usecase"
-    properties: 
-      name:
+      path:
         type: string
-        description: |-
-          Provide a name for your usecase to provide contextual information for humans reading the results
-      flavour:
+        description: Glob pattern for configuration loading
+      reload.enabled:
+        type: boolean
+        description: Set to true to enable config reloading
+      reload.period:
         type: string
-        description: |-
-          Provide an easy way to identify different types of names, it is intended for providing help to people 
-          reading the results
-      iterations:
-        type: integer
-        description: |-
-          How many times we want to run the whole suite of benchmarks, this is useful if you want to check for run-to-run
-          variations
-      suites:
-        type: array
-        items: 
-          type: object
-          description: This is the suite of benchmarks we want to run
-          required:
-            - name
-            - benchmarks
-          properties: 
-            name:
-              type: string
-              description: |-
-                Provide a meaningful name for your suite, something useful that later can provide contextual information
-            use_output:
-              type: string
-              description: |-
-                If you have defined multiple output targets, then you need to define per suite what output we should use.
-            matrix:
-              type: object
-              properties:
-                axes:
-                  type: object
-                  description: |-
-                    This is a set of parameters that will form a cartesian matrix and be merged with the local 
-                    parameters of the benchmark
-            pre_run:
-              type: array
-              items:
-                $ref: "#/$defs/hook"
-            post_run:
-              type: array
-              items:
-                $ref: "#/$defs/hook"
-            version:
-              type: string
-              description: |-
-                Optional: Sets the default version for all benchmarks in the suite. 
-                This can be overridden by specifying a version at the individual benchmark level.
-            benchmarks:
-              type: array
-              items:
-                type: object
-                description: "This is the list of benchmark we want to run"
-                required:
-                  - type
-                  - input
-                properties:
-                  type:
-                    type: string
-                    enum:
-                      - filebeat
-                      - elastic-agent
-                      - metricsgenreceiver
-                    description: This field controls which type of benchmark you want to run.
-                  parameters:
-                    type: object
-                    description: Provide a key:value pair for parameterising your benchmark
-                  input:
-                    type: string
-                    description: |-
-                      This is the input that the benchmark will use. It is a soft reference to a hook id that must be 
-                      defined in this usecase.
-                  version:
-                    type: string
-                    description: |-
-                      Which version of the benchmark tool are we going to use. This field can have multiple type of string 
-                      formats. \n
-                      If you want to run on a release version a simple "{major}.{minor}.{patch}" string would work.\n
-                      If you want to use a pre-release version such as SNAPSHOT|STAGING builds especially for Beats and
-                      Elastic-Agent binaries, then you can specify "{major}.{minor}.{patch}-SNAPSHOT" or 
-                      "{major}.{minor}.{patch}-{DRA_ID}" for specific staging build.\n
-                      It also supports one special alias "__LATEST__" which automatically tries to detect which is the 
-                      last official release.
-                      
-                      Examples of valid values:\n
-                      - "8.10.2"\n
-                      - "8.10.2-SNAPSHOT"\n
-                      - "8.10.2-12345"\n
-                      - "__LATEST__"
-                  name:
-                    type: string
-                    description: You can provide an optional name for your benchmark to help you easily review results
-                  configuration_template:
-                    type: string
-                    description: |-
-                      This is the benchmark's configuration we will use, you can either specify a relative path such as 
-                      file://{filename} or a remote endpoint such as a remote gist http://gist... or directly a Go 
-                      template that we will render and write to a file to be used as part of the benchmark artifacts.\n
-                      Here you can access the benchmark parameters from `{{.benchmark.key}}` and the output parameters 
-                      from `{{.output.key}}`.\n
-                      Example:\n
-                      ```yaml
-                      output:\n
-                        host: "{{.output.host}}"\n
-                        port: "{{.output.port}}"\n
-                      benchmark:\n
-                        name: "{{.benchmark.name}}"\n
-                        version: "{{.benchmark.version}}"
-                      ```
-                  pre_run:
-                    type: array
-                    items:
-                      $ref: "#/$defs/hook"
-                  post_run:
-                    type: array
-                    items:
-                      $ref: "#/$defs/hook"
-                  source:
-                    type: string
-                    description: if you know the location of the binary you want to run
-                  mode:
-                    type: string
-                    default: noOtel
-                    enum:
-                      - otel
-                      - noOtel
-                    description: |-
-                      Specifies the mode of operation for the benchmark:\n 
-                      - "otel": Enables OpenTelemetry mode for the benchmark.\n
-                      - "noOtel": Legacy mode (default).
-                  sidecar:
-                    type: array
-                    description: |-
-                      Run these hooks while the benchmark is running.
-                    items:
-                      type: object
-                  diagnostics:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        percent:
-                          type: string
-                          description: At which % of the progress you want to capture
-                        command:
-                          type: string
-                          description: |-
-                            Provide a curl or other command for capturing the diagnostic. Capturing the stdOut/stdErr of
-                            the command is done by BenchBuilder
-                        prefix:
-                          type: string
-                          description: "prefix the generated files with something"
-                        pprof:
-                          type: object
-                          description: Some pprof diagnostics require that you set certain parameters for them to work. Currently, no specific properties are defined.
-                          properties: {}
-                  env:
-                    type: object
-                    description: |-
-                      This is a key:value pair for environment variables to be exported in the context of running the 
-                      benchmark.
-                # This block applies to the whole benchmark object
-                allOf:
-                  - if:
-                      properties:
-                        type:
-                          const: "metricsgenreceiver"
-                    then:
-                        # If type is metricsgenreceiver, then the 'parameters' object is required...
-                        required:
-                          - parameters
-                        # ...and its content must conform to the metricsgenreceiver_parameters schema.
-                        properties:
-                          parameters:
-                            $ref: "#/$defs/metricsgenreceiver_parameters"
+        description: Period on which files under path should be checked for changes
 
+  metricbeat.modules:
+    type: array
+    description: Configuration for modules
+    items:
+      type: object
+      properties:
+        module:
+          type: string
+          description: Name of the module
+        metricsets:
+          type: array
+          items:
+            type: string
+          description: List of metricsets to enable for the module
 
-$defs:
-  placeholderWithDefault:
-    description: "A string representing a URL with an environment variable placeholder and a default value, e.g., ${ES_HOST:https://localhost:9200}"
-    type: string
-    # This pattern validates the following structure: ${VAR:default}
-    pattern: "^\\$\\{[A-Z_][A-Z0-9_]*:.+\\}$"
-    examples:
-      - "${ES_HOST:https://localhost:9200}"
-      - "${KB_HOST:http://127.0.0.1:5601}"
-  placeholderOnly:
-    description: "A string representing a URL with only an environment variable placeholder, e.g., ${ES_HOST}"
-    type: string
-    # This pattern validates the following structure: ${VAR}
-    pattern: "^\\$\\{[A-Z_][A-Z0-9_]*\\}$"
-    examples:
-      - "${ES_HOST}"
-      - "${KB_HOST}"
-  standardUrl:
-    description: "A standard, valid Uniform Resource Identifier (URI)."
-    type: string
-    format: uri
-    examples:
-      - "https://localhost:9200"
-      - "http://example.com"
-  flexibleUrl:
-    description: "A field that can be a standard URL, a placeholder variable, or a placeholder with a default value."
-    oneOf:
-      - $ref: "#/$defs/placeholderWithDefault"
-      - $ref: "#/$defs/placeholderOnly"
-      - $ref: "#/$defs/standardUrl"
-  url:
-    description: A full Uniform Resource Locator (URL).
-    type: string
-    format: uri
-  uri:
-    description: A Uniform Resource Identifier (URI).
-    type: string
-    format: uri-reference
-  port:
-    description: A network port number.
-    type: integer
-    minimum: 0
-    maximum: 65535
-  tls_insecure:
-    type: boolean
-    description: Whether to disable TLS certificate verification
-    default: false
-  header:
-    description: An object representing HTTP headers.
+  output.elasticsearch:
     type: object
-    additionalProperties:
-      type: string
-  contentType:
-    description: The MIME type of the content.
-    type: string
-    pattern: "^[a-zA-Z]+\\/[a-zA-Z0-9\\.\\+\\-]+$"
-    examples:
-      - "application/json"
-      - "text/html"
-      - "application/vnd.api+json"
-  duration:
-    description: A time duration, specified as a number followed by 's' (seconds), 'm' (minutes), 'h' (hours), or 'd' (days).
-    type: string
-    pattern: "^[1-9][0-9]*(s|m|h|d)$"
-    examples:
-      - "20s"
-      - "3m"
-      - "5h"
-      - "3d"
-  elasticsearchApiKey:
-    description: An API key for authenticating with Elasticsearch, typically a Base64 encoded string.
-    type: string
-    pattern: "^[A-Za-z0-9\\-_=]+$"
-    examples:
-      - ""
-
-  elasticsearch_output:
+    description: Elasticsearch output configuration
+  output.logstash:
     type: object
-    description: Configuration for sending data to Elasticsearch
-    properties:
-      cloud_id:
-        type: string
-        description: Cloud ID for Elastic Cloud deployments
-      host:
-        $ref: "#/$defs/flexibleUrl"
-        description: Elasticsearch host address
-      port:
-        $ref: "#/$defs/port"
-        description: Elasticsearch port
-      kibana_host:
-        $ref: "#/$defs/flexibleUrl"
-        description: Kibana host address
-      api_key:
-        $ref: "#/$defs/elasticsearchApiKey"
-        description: API key for Elasticsearch authentication
-      username:
-        type: string
-        description: Username for Elasticsearch authentication
-      password:
-        type: string
-        description: Password for Elasticsearch authentication
-      tls_insecure:
-        $ref: "#/$defs/tls_insecure"
-
-  victoria_metrics_output:
+    description: Logstash output configuration
+  output.file:
     type: object
-    description: Configuration for sending data to Victoria Metrics
-    properties:
-      single_url:
-        $ref: "#/$defs/flexibleUrl"
-        description: URL for single-node Victoria Metrics setup
-      ingest_url:
-        $ref: "#/$defs/url"
-        description: URL for data ingestion in clustered setup
-      select_url:
-        $ref: "#/$defs/url"
-        description: URL for data querying in clustered setup
-      storage_url:
-        $ref: "#/$defs/url"
-        description: URL for storage in clustered setup
-      tls_insecure:
-        $ref: "#/$defs/tls_insecure"
-        default: false
-
-  mimir_output:
+    description: File output configuration
+  output.console:
     type: object
-    description: Configuration for sending data to Mimir
-    required:
-      - mode
-    properties:
-      mode:
-        type: string
-        description: Deployment mode for Mimir
-        enum:
-          - monolithic
-          - cluster
-      write_endpoint:
-        $ref: "#/$defs/flexibleUrl"
-        description: URL for the distributor component used for remote writes
-      read_endpoint:
-        $ref: "#/$defs/url"
-        description: URL for the query-frontend used for PromQL queries
-      ruler_endpoint:
-        $ref: "#/$defs/url"
-        description: URL for the ruler component used for managing rules
-      alertmanager_endpoint:
-        $ref: "#/$defs/url"
-        description: URL for the Alertmanager
-      tenant_id:
-        type: string
-        description: Mimir tenant ID to use for all requests
-      tls_insecure:
-        $ref: "#/$defs/tls_insecure"
-
-  hook:
-    type: object
-    description: The hook description
-    properties:
-      id:
-        type: string
-      type:
-        type: string
-        enum:
-          - StaticInput
-          - Stream
-          - RandomLogGenerator
-          - CheckDestinationIndex
-          - CleanUpFolders
-          - CleanUpDestinationIndex
-          - component_template # needs to be renamed
-          - ContainerRunner
-          - DiskWarmup
-          - ForceMergeIndex
-          - HttpDownload
-          - KibanaPackageAsset
-          - QueryGenerator
-          - ScriptRunner
-          - spigot # also needs to be renamed
-          - Vegeta
-      parameters:
-        type: object
-        description: |-
-          This is a key-value map where the keys are strings representing parameter names, 
-          and the values are strings representing their corresponding values. These parameters 
-          are used to configure the behavior of the hook, allowing customization based on the 
-          specific requirements of the use case.
-
-  # Specific parameters schema for metricsgenreceiver
-  metricsgenreceiver_parameters:
-    type: object
-    properties:
-      input_type:
-        type: string
-        description: "The input type"
-        enum: [metricsgenreceiver]
-      scenario:
-        type: string
-        description: "The data generation scenario to use (e.g., hostmetrics)."
-        enum: [hostmetrics, apm, logs]
-      scale:
-        type: integer
-        description: "A scaling factor for data generation."
-        minimum: 1
-      duration:
-        $ref: "#/$defs/duration"
-      interval:
-        $ref: "#/$defs/duration"
-      workers:
-        type: integer
-        description: "Number of workers for the data exporter."
-        minimum: 1
-    required:
-      - input_type
-      - scenario
-      - scale
-      - duration
-      - interval
-      - workers
+    description: Console output configuration
     additionalProperties: false
+    properties:
+      pretty:
+        type: boolean
+        description: Whether to format the output in a human-readable way

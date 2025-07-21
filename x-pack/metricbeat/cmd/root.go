@@ -55,6 +55,7 @@ func Initialize() *cmd.BeatsRootCmd {
 		management.ConfigTransform.SetTransform(metricbeatCfg)
 	}
 	addOTelCommand(rootCmd)
+	addValidateCommand(rootCmd)
 	return rootCmd
 }
 

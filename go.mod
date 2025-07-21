@@ -241,7 +241,11 @@ require (
 	gopkg.in/yaml.v3 v3.0.1
 )
 
-require go.opentelemetry.io/otel/sdk/metric v1.36.0
+require (
+	github.com/elastic/gojsonschema v1.2.1
+	go.opentelemetry.io/otel/sdk/metric v1.36.0
+	sigs.k8s.io/yaml v1.4.0
+)
 
 require (
 	aqwari.net/xml v0.0.0-20210331023308-d9421b293817 // indirect
@@ -412,6 +416,8 @@ require (
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect
 	github.com/xdg-go/stringprep v1.0.4 // indirect
+	github.com/xeipuuv/gojsonpointer v0.0.0-20180127040702-4e3ac2762d5f // indirect
+	github.com/xeipuuv/gojsonreference v0.0.0-20180127040603-bd5ef7bd5415 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	github.com/zeebo/errs v1.4.0 // indirect
@@ -496,7 +502,6 @@ require (
 	mvdan.cc/garble v0.12.1 // indirect
 	sigs.k8s.io/json v0.0.0-20241010143419-9aa6b5e7a4b3 // indirect
 	sigs.k8s.io/structured-merge-diff/v4 v4.4.2 // indirect
-	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
 require (

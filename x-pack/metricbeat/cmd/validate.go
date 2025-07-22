@@ -64,7 +64,9 @@ func validateCmd() *cobra.Command {
 					fmt.Fprintln(cmd.ErrOrStderr(), desc)
 				}
 
-				return fmt.Errorf("%s is invalid", configFile)
+				fmt.Printf("%s is invalid\n", configFile)
+				os.Exit(1)
+				return nil
 			}
 
 			fmt.Printf("%s is valid\n", configFile)

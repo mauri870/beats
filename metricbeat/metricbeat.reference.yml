@@ -2170,6 +2170,9 @@ output.elasticsearch:
   # Boolean flag to enable or disable the output module.
   #enabled: true
 
+  # Pretty-print events in the console output.
+  #pretty: false
+
   # Configure JSON encoding
   #codec.json:
     # Pretty-print JSON event

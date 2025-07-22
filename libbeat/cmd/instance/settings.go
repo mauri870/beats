@@ -53,4 +53,7 @@ type Settings struct {
 
 	// Initialize functions that are called in-order to initialize unique items for the beat.
 	Initialize []func()
+
+	// Schema is the YAML json schema for the beat configuration.
+	Schema []byte
 }

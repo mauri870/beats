@@ -12,14 +12,18 @@ Downloads: https://www.elastic.co/downloads/beats/metricbeat
 package main
 
 import (
+	_ "embed"
 	"os"
 	_ "time/tzdata" // for timezone handling
 
 	"github.com/elastic/beats/v7/x-pack/metricbeat/cmd"
 )
 
+//go:embed metricbeat-schema.yaml
+var schema []byte
+
 func main() {
-	if err := cmd.Initialize().Execute(); err != nil {
+	if err := cmd.Initialize(schema).Execute(); err != nil {
 		os.Exit(1)
 	}
 }

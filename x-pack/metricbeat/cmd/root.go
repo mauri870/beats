@@ -40,13 +40,14 @@ var withECSVersion = processing.WithFields(mapstr.M{
 	},
 })
 
-func Initialize() *cmd.BeatsRootCmd {
+func Initialize(schema []byte) *cmd.BeatsRootCmd {
 	globalProcs, err := processors.NewPluginConfigFromList(defaultProcessors())
 	if err != nil { // these are hard-coded, shouldn't fail
 		panic(fmt.Errorf("error creating global processors: %w", err))
 	}
 	settings := mbcmd.MetricbeatSettings("")
 	settings.ElasticLicensed = true
+	settings.Schema = schema
 	settings.Processing = processing.MakeDefaultSupport(true, globalProcs, withECSVersion, processing.WithHost, processing.WithAgentMeta())
 	rootCmd := cmd.GenRootCmdWithSettings(beater.DefaultCreator(), settings)
 	rootCmd.AddCommand(cmd.GenModulesCmd(Name, "", mbcmd.BuildModulesManager))
@@ -55,7 +56,6 @@ func Initialize() *cmd.BeatsRootCmd {
 		management.ConfigTransform.SetTransform(metricbeatCfg)
 	}
 	addOTelCommand(rootCmd)
-	addValidateCommand(rootCmd)
 	return rootCmd
 }
 

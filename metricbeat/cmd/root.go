@@ -18,6 +18,7 @@
 package cmd
 
 import (
+	_ "embed"
 	"flag"
 
 	"github.com/spf13/pflag"

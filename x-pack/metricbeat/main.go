@@ -19,7 +19,7 @@ import (
 	"github.com/elastic/beats/v7/x-pack/metricbeat/cmd"
 )
 
-//go:embed metricbeat-schema.yml
+//go:embed metricbeat.schema.yml
 var schema []byte
 
 func main() {

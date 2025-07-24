@@ -10,19 +10,24 @@ properties:
       path:
         type: string
         description: Glob pattern for configuration loading
+        default: "${path.config}/modules.d/*.yml"
       reload.enabled:
         type: boolean
         description: Set to true to enable config reloading
+        default: false
       reload.period:
         type: string
         description: Period on which files under path should be checked for changes
+        default: "10s"
 
   metricbeat.max_start_delay:
     type: string
     description: Upper bound on the random startup delay for metricbeat
+    default: "10s"
     
   metricbeat.autodiscover:
     type: object
+    description: Autodiscover allows you to detect changes in the system and spawn new modules as they happen
     description: Autodiscover allows you to detect changes in the system and spawn new modules as they happen
     properties:
       providers:
@@ -48,6 +53,7 @@ properties:
   timeseries.enabled:
     type: boolean
     description: Enable or disable time series indexing mode
+    default: false
 
   metricbeat.modules:
     type: array

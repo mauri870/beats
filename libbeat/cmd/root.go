@@ -74,8 +74,12 @@ func GenRootCmdWithSettings(beatCreator beat.Creator, settings instance.Settings
 	rootCmd.SetupCmd = genSetupCmd(settings, beatCreator)
 	rootCmd.KeystoreCmd = genKeystoreCmd(settings)
 	rootCmd.VersionCmd = GenVersionCmd(settings)
-	rootCmd.ValidateCmd = GenValidateCmd(settings)
 	rootCmd.CompletionCmd = genCompletionCmd(settings, rootCmd)
+
+	// only register validate command for beats with a schema
+	if settings.Schema != nil {
+		rootCmd.ValidateCmd = GenValidateCmd(settings)
+	}
 
 	// Root command is an alias for run
 	rootCmd.Run = rootCmd.RunCmd.Run
@@ -104,12 +108,14 @@ func GenRootCmdWithSettings(beatCreator beat.Creator, settings instance.Settings
 	rootCmd.AddCommand(rootCmd.RunCmd)
 	rootCmd.AddCommand(rootCmd.SetupCmd)
 	rootCmd.AddCommand(rootCmd.VersionCmd)
-	rootCmd.AddCommand(rootCmd.ValidateCmd)
 	rootCmd.AddCommand(rootCmd.CompletionCmd)
 	rootCmd.AddCommand(rootCmd.ExportCmd)
 	rootCmd.AddCommand(rootCmd.TestCmd)
 	if rootCmd.KeystoreCmd != nil {
 		rootCmd.AddCommand(rootCmd.KeystoreCmd)
+	}
+	if rootCmd.ValidateCmd != nil {
+		rootCmd.AddCommand(rootCmd.ValidateCmd)
 	}
 
 	return rootCmd

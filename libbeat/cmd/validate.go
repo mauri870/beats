@@ -35,15 +35,6 @@ func GenValidateCmd(settings instance.Settings) *cobra.Command {
 		Use:   "validate",
 		Short: "Validate the provided configuration file",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			beat, err := instance.NewBeat(settings.Name, settings.IndexPrefix, settings.Version, settings.ElasticLicensed, settings.Initialize)
-			if err != nil {
-				return fmt.Errorf("error initializing beat: %s", err)
-			}
-
-			if settings.Schema == nil {
-				return fmt.Errorf("no schema available for %s", beat.Info.Beat)
-			}
-
 			schema := settings.Schema
 			if printSchema {
 				fmt.Println(string(schema))

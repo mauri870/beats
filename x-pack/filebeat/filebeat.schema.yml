@@ -1,0 +1,812 @@
+$schema: http://json-schema.org/draft-07/schema
+type: object
+title: Filebeat Configuration Schema
+description: Schema for Filebeat configuration files
+properties:
+  # ================= Filebeat Specific Configuration =================
+  filebeat.config.modules:
+    type: object
+    description: Configuration for Filebeat modules
+    properties:
+      path:
+        type: string
+        description: Glob pattern for configuration loading
+        default: "${path.config}/modules.d/*.yml"
+      reload.enabled:
+        type: boolean
+        description: Set to true to enable config reloading
+        default: false
+      reload.period:
+        type: string
+        description: Period on which files under path should be checked for changes
+        default: "10s"
+
+  filebeat.modules:
+    type: array
+    description: Configuration for modules
+    items:
+      type: object
+      properties:
+        module:
+          type: string
+          description: Name of the module
+        enabled:
+          type: boolean
+          description: Enable/disable the module
+          default: true
+        var.paths:
+          type: array
+          items:
+            type: string
+          description: Custom paths for log files
+        var.use_journald:
+          type: boolean
+          description: Use journald to collect logs
+          default: false
+      required: ["module"]
+      additionalProperties: true
+
+  filebeat.inputs:
+    type: array
+    description: List of inputs to fetch data
+    items:
+      type: object
+      properties:
+        type:
+          type: string
+          description: Type of input
+          enum: 
+            - "filestream"
+            - "log"
+            - "stdin"
+            - "journald"
+            - "docker"
+            - "container"
+            - "kafka"
+            - "tcp"
+            - "udp"
+            - "syslog"
+            - "netflow"
+            - "http_endpoint"
+            - "httpjson"
+            - "azure-eventhub"
+            - "aws-cloudwatch"
+            - "aws-s3"
+            - "gcp-pubsub"
+            - "gcs"
+            - "redis"
+            - "winlog"
+            - "etw"
+            - "unix"
+            - "mqtt"
+            - "o365audit"
+            - "salesforce"
+            - "streaming"
+            - "cel"
+        id:
+          type: string
+          description: Unique ID among all inputs
+        enabled:
+          type: boolean
+          description: Enable/disable the input
+          default: true
+        paths:
+          type: array
+          items:
+            type: string
+          description: Paths that should be crawled and fetched
+        encoding:
+          type: string
+          description: File encoding for reading files with international characters
+          default: "plain"
+        exclude_lines:
+          type: array
+          items:
+            type: string
+          description: List of regular expressions to match lines to exclude
+        include_lines:
+          type: array
+          items:
+            type: string
+          description: List of regular expressions to match lines to include
+        exclude_files:
+          type: array
+          items:
+            type: string
+          description: List of regular expressions to match files to exclude
+        fields:
+          type: object
+          description: Optional additional fields
+          additionalProperties: true
+        fields_under_root:
+          type: boolean
+          description: Store additional fields as top-level fields
+          default: false
+        keep_null:
+          type: boolean
+          description: Publish fields with null values in events
+          default: false
+        publisher_pipeline.disable_host:
+          type: boolean
+          description: Disable addition of host.name field to all events
+          default: false
+        ignore_older:
+          type: string
+          description: Ignore files modified more than the defined timespan in the past
+          default: "0"
+        scan_frequency:
+          type: string
+          description: How often the input checks for new files
+          default: "10s"
+        harvester_buffer_size:
+          type: integer
+          description: Buffer size every harvester uses when fetching the file
+          default: 16384
+        max_bytes:
+          type: integer
+          description: Maximum number of bytes a single log event can have
+          default: 10485760
+        line_terminator:
+          type: string
+          description: Characters that separate the lines
+          enum: ["auto", "line_feed", "vertical_tab", "form_feed", "carriage_return", "carriage_return_line_feed", "next_line", "line_separator", "paragraph_separator", "null_terminator"]
+          default: "auto"
+        prospector.scanner.recursive_glob:
+          type: boolean
+          description: Expand ** patterns into regular glob patterns
+          default: true
+        prospector.scanner.exclude_files:
+          type: array
+          items:
+            type: string
+          description: List of regular expressions to match files to exclude
+        prospector.scanner.include_files:
+          type: array
+          items:
+            type: string
+          description: List of regular expressions to match files to include
+        prospector.scanner.symlinks:
+          type: boolean
+          description: Enable symlink following
+          default: false
+        prospector.scanner.resend_on_touch:
+          type: boolean
+          description: Resend files when they are touched
+          default: false
+        prospector.scanner.check_interval:
+          type: string
+          description: How often to check for new files
+          default: "10s"
+        prospector.scanner.fingerprint.enabled:
+          type: boolean
+          description: Enable file fingerprinting
+          default: true
+        parsers:
+          type: array
+          description: List of parsers to apply to the input
+          items:
+            type: object
+        processors:
+          type: array
+          description: List of processors to apply to events
+          items:
+            type: object
+        index:
+          type: string
+          description: Optional data stream or index name
+        pipeline:
+          type: string
+          description: Optional ingest pipeline
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags of the shipper
+      required: ["type"]
+      additionalProperties: true
+
+  filebeat.autodiscover:
+    type: object
+    description: Autodiscover allows you to detect changes in the system and spawn new inputs
+    properties:
+      providers:
+        type: array
+        items:
+          type: object
+          properties:
+            type:
+              type: string
+              description: Provider type
+              enum: ["docker", "kubernetes", "jolokia", "nomad"]
+            host:
+              type: string
+              description: Docker socket (for docker provider)
+            ssl:
+              type: object
+              description: SSL configuration for provider connections
+            cleanup_timeout:
+              type: string
+              description: Time of inactivity before stopping running configuration
+              default: "60s"
+            labels.dedot:
+              type: boolean
+              description: Replace dots in labels with underscore
+              default: false
+            annotations.dedot:
+              type: boolean
+              description: Replace dots in annotations with underscore
+              default: true
+            resource:
+              type: string
+              description: Kubernetes resource to watch
+              enum: ["pod", "service", "node"]
+              default: "pod"
+            scope:
+              type: string
+              description: Scope for autodiscover (node or cluster)
+              enum: ["node", "cluster"]
+              default: "node"
+            node:
+              type: string
+              description: Kubernetes node name
+            namespace:
+              type: string
+              description: Kubernetes namespace
+            kubeconfig:
+              type: string
+              description: Path to kubeconfig file
+            kube_config:
+              type: string
+              description: Path to kubeconfig file (alias)
+            host:
+              type: string
+              description: Kubernetes API server host
+            in_cluster:
+              type: boolean
+              description: Use in-cluster authentication
+              default: true
+            add_resource_metadata:
+              type: object
+              description: Extra metadata configuration
+            include_labels:
+              type: array
+              items:
+                type: string
+              description: Labels to include in events
+            exclude_labels:
+              type: array
+              items:
+                type: string
+              description: Labels to exclude from events
+            include_annotations:
+              type: array
+              items:
+                type: string
+              description: Annotations to include in events
+            hints.enabled:
+              type: boolean
+              description: Enable hints-based autodiscover
+              default: false
+            hints.default_config:
+              type: object
+              description: Default configuration for hints
+            templates:
+              type: array
+              description: Configuration templates
+              items:
+                type: object
+                properties:
+                  condition:
+                    type: object
+                    description: Condition to match
+                  config:
+                    type: array
+                    description: Configuration for matched condition
+            interfaces:
+              type: array
+              description: Network interfaces for Jolokia discovery
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                    description: Interface name
+                  interval:
+                    type: string
+                    description: Time between probes
+                    default: "10s"
+                  grace_period:
+                    type: string
+                    description: Time to consider instance stopped
+                    default: "30s"
+                  probe_timeout:
+                    type: string
+                    description: Max time to wait for responses
+                    default: "1s"
+            address:
+              type: string
+              description: Nomad agent address
+            region:
+              type: string
+              description: Nomad region
+            secret_id:
+              type: string
+              description: Nomad ACL secret ID
+            wait_time:
+              type: string
+              description: Nomad watch block time
+            allow_stale:
+              type: boolean
+              description: Allow stale Nomad reads
+              default: false
+          required: ["type"]
+          additionalProperties: true
+
+  # ================= Output Configuration =================
+  output.elasticsearch:
+    type: object
+    description: Elasticsearch output configuration
+    properties:
+      enabled:
+        type: boolean
+        description: Boolean flag to enable or disable the output module
+        default: true
+      hosts:
+        type: array
+        items:
+          type: string
+        description: Array of hosts to connect to
+        default: ["localhost:9200"]
+      preset:
+        type: string
+        enum: ["balanced", "throughput", "scale", "latency", "custom"]
+        description: Performance presets configure other output fields to recommended values
+        default: "balanced"
+      compression_level:
+        type: integer
+        minimum: 0
+        maximum: 9
+        description: Set gzip compression level. Set to 0 to disable compression
+        default: 1
+      escape_html:
+        type: boolean
+        description: Configure escaping HTML symbols in strings
+        default: false
+      protocol:
+        type: string
+        enum: ["http", "https"]
+        description: Protocol - either http (default) or https
+        default: "http"
+      api_key:
+        type: string
+        description: API key for authentication (format id:api_key)
+      username:
+        type: string
+        description: Username for authentication
+      password:
+        type: string
+        description: Password for authentication
+      parameters:
+        type: object
+        description: Dictionary of HTTP parameters to pass within the URL with index operations
+        additionalProperties:
+          type: string
+      worker:
+        type: integer
+        minimum: 1
+        description: Number of workers per Elasticsearch host
+        default: 1
+      loadbalance:
+        type: boolean
+        description: If set to true, load balances published events onto all Elasticsearch hosts
+        default: true
+      index:
+        type: string
+        description: Optional data stream or index name
+        default: "filebeat-%{[agent.version]}"
+      pipeline:
+        type: string
+        description: Optional ingest pipeline
+      path:
+        type: string
+        description: Optional HTTP path
+      headers:
+        type: object
+        description: Custom HTTP headers to add to each request
+        additionalProperties:
+          type: string
+      proxy_url:
+        type: string
+        description: Proxy server URL
+      proxy_disable:
+        type: boolean
+        description: Whether to disable proxy settings for outgoing connections
+        default: false
+      max_retries:
+        type: integer
+        minimum: 0
+        description: The number of times a particular Elasticsearch index operation is attempted
+        default: 3
+      bulk_max_size:
+        type: integer
+        minimum: 1
+        description: The maximum number of events to bulk in a single Elasticsearch bulk API index request
+        default: 1600
+      backoff:
+        type: object
+        description: Backoff configuration for reconnection attempts
+        properties:
+          init:
+            type: string
+            description: The number of seconds to wait before trying to reconnect after a network error
+            default: "1s"
+          max:
+            type: string
+            description: The maximum number of seconds to wait before attempting to connect after a network error
+            default: "60s"
+        additionalProperties: false
+      idle_connection_timeout:
+        type: string
+        description: The maximum amount of time an idle connection will remain idle before closing
+        default: "3s"
+      timeout:
+        type: integer
+        description: Configure HTTP request timeout before failing a request to Elasticsearch
+        default: 90
+      allow_older_versions:
+        type: boolean
+        description: Prevents filebeat from connecting to older Elasticsearch versions when set to false
+        default: true
+      ssl:
+        type: object
+        description: SSL/TLS configuration for HTTPS connections
+        properties:
+          enabled:
+            type: boolean
+            description: Use SSL settings for HTTPS
+            default: false
+          verification_mode:
+            type: string
+            enum: ["full", "strict", "certificate", "none"]
+            description: Controls the verification of certificates
+            default: "full"
+          supported_protocols:
+            type: array
+            items:
+              type: string
+              enum: ["TLSv1.0", "TLSv1.1", "TLSv1.2", "TLSv1.3"]
+            description: List of supported/valid TLS versions
+            default: ["TLSv1.1", "TLSv1.2", "TLSv1.3"]
+          certificate_authorities:
+            type: array
+            items:
+              type: string
+            description: List of root certificates for HTTPS server verifications
+          certificate:
+            type: string
+            description: Certificate for SSL client authentication
+          key:
+            type: string
+            description: Client certificate key
+          key_passphrase:
+            type: string
+            description: Optional passphrase for decrypting the certificate key
+          cipher_suites:
+            type: array
+            items:
+              type: string
+            description: Configure cipher suites to be used for SSL connections
+          curve_types:
+            type: array
+            items:
+              type: string
+            description: Configure curve types for ECDHE-based cipher suites
+          renegotiation:
+            type: string
+            enum: ["never", "once", "freely"]
+            description: Configure what types of renegotiation are supported
+            default: "never"
+          ca_sha256:
+            type: string
+            description: Configure a pin for extra validation of the verified certificate chain
+          ca_trusted_fingerprint:
+            type: string
+            description: A root CA HEX encoded fingerprint
+          restart_on_cert_change:
+            type: object
+            description: Configuration for restarting filebeat on certificate changes
+            properties:
+              enabled:
+                type: boolean
+                description: Enables restarting filebeat if any certificate file is modified
+                default: false
+              period:
+                type: string
+                description: Period to scan for changes on CA certificate files
+                default: "1m"
+            additionalProperties: false
+        additionalProperties: false
+      kerberos:
+        type: object
+        description: Kerberos authentication configuration
+        properties:
+          enabled:
+            type: boolean
+            description: Enable Kerberos support
+            default: false
+        additionalProperties: true
+    additionalProperties: false
+
+  output.logstash:
+    type: object
+    description: Logstash output configuration
+    properties:
+      hosts:
+        type: array
+        items:
+          type: string
+        description: The Logstash hosts
+      ssl:
+        type: object
+        description: SSL configuration
+        properties:
+          certificate_authorities:
+            type: array
+            items:
+              type: string
+            description: List of root certificates for HTTPS server verifications
+          certificate:
+            type: string
+            description: Certificate for SSL client authentication
+          key:
+            type: string
+            description: Client Certificate Key
+        additionalProperties: true
+    additionalProperties: true
+
+  # ================= Setup Configuration =================
+  setup.template.settings:
+    anyOf:
+      - type: object
+        description: Elasticsearch template settings
+        properties:
+          index.number_of_shards:
+            type: integer
+            description: Number of primary shards
+            default: 1
+          index.codec:
+            type: string
+            description: Index codec
+          _source.enabled:
+            type: boolean
+            description: Enable _source field
+            default: true
+        additionalProperties: true
+      - type: "null"
+
+  setup.kibana:
+    anyOf:
+      - type: object
+        description: Kibana configuration
+        properties:
+          host:
+            type: string
+            description: Kibana Host
+            default: "localhost:5601"
+          space.id:
+            type: string
+            description: Kibana Space ID
+        additionalProperties: true
+      - type: "null"
+
+  setup.dashboards.enabled:
+    type: boolean
+    description: Enable loading sample dashboards
+    default: false
+
+  setup.dashboards.url:
+    type: string
+    description: URL to download dashboard archive from
+
+  # ================= General Configuration =================
+  name:
+    type: string
+    description: Name of the shipper
+
+  tags:
+    type: array
+    items:
+      type: string
+    description: Tags of the shipper
+
+  fields:
+    type: object
+    description: Optional fields to add additional information to the output
+    additionalProperties: true
+
+  # ================= Cloud Configuration =================
+  cloud.id:
+    type: string
+    description: Cloud ID setting for Elastic Cloud
+
+  cloud.auth:
+    type: string
+    description: Cloud auth setting (format user:pass)
+
+  # ================= Processors Configuration =================
+  processors:
+    type: array
+    description: List of processors to apply to events
+    items:
+      type: object
+      properties:
+        add_host_metadata:
+          type: object
+          description: Add host metadata to events
+          properties:
+            when.not.contains.tags:
+              type: string
+              description: Conditional execution
+        add_cloud_metadata:
+          anyOf:
+            - type: object
+            - type: "null"
+          description: Add cloud metadata to events
+        add_docker_metadata:
+          anyOf:
+            - type: object
+            - type: "null"
+          description: Add docker metadata to events
+        add_kubernetes_metadata:
+          anyOf:
+            - type: object
+            - type: "null"
+          description: Add kubernetes metadata to events
+      additionalProperties: true
+
+  # ================= Logging Configuration =================
+  logging.level:
+    type: string
+    enum: ["error", "warning", "info", "debug"]
+    description: Sets log level
+    default: "info"
+
+  logging.selectors:
+    type: array
+    items:
+      type: string
+    description: Enable logging only for some components
+
+  logging.to_files:
+    type: boolean
+    description: Enable logging to files
+    default: false
+
+  logging.files:
+    anyOf:
+      - type: object
+        description: Logging files configuration
+        properties:
+          path:
+            type: string
+            description: Path to log files directory
+          name:
+            type: string
+            description: Name of log file
+          rotateeverybytes:
+            type: integer
+            description: Rotate log file when it reaches this size
+          keepfiles:
+            type: integer
+            description: Number of log files to keep
+        additionalProperties: true
+      - type: "null"
+
+  logging.metrics.enabled:
+    type: boolean
+    description: Enable periodic logging of internal metrics
+    default: true
+
+  logging.metrics.period:
+    type: string
+    description: Period for logging internal metrics
+    default: "30s"
+
+  logging.metrics.namespaces:
+    type: array
+    items:
+      type: string
+    description: Metrics namespaces to report in logs
+    default: ["stats"]
+
+  # ================= Monitoring Configuration =================
+  monitoring.enabled:
+    type: boolean
+    description: Enable the monitoring reporter
+    default: false
+
+  monitoring.cluster_uuid:
+    type: string
+    description: UUID of the Elasticsearch cluster for monitoring data
+
+  monitoring.elasticsearch:
+    type: object
+    description: Elasticsearch monitoring configuration
+    additionalProperties: true
+
+  # ================= Instrumentation Configuration =================
+  instrumentation:
+    type: object
+    description: Instrumentation support configuration
+    properties:
+      enabled:
+        type: boolean
+        description: Enable instrumentation of filebeat
+        default: false
+      environment:
+        type: string
+        description: Environment in which filebeat is running
+      hosts:
+        type: array
+        items:
+          type: string
+        description: APM Server hosts to report instrumentation results to
+      api_key:
+        type: string
+        description: API Key for the APM Server(s)
+      secret_token:
+        type: string
+        description: Secret token for the APM Server(s)
+    additionalProperties: false
+
+  # ================= HTTP Endpoint Configuration =================
+  http.enabled:
+    type: boolean
+    description: Enable HTTP endpoint for stats and info
+    default: false
+
+  http.host:
+    type: string
+    description: Host for HTTP endpoint
+    default: "localhost"
+
+  http.port:
+    type: integer
+    description: Port for HTTP endpoint
+    default: 5066
+
+  http.named_pipe.user:
+    type: string
+    description: User for named pipe on Windows
+
+  http.named_pipe.security_descriptor:
+    type: string
+    description: Security descriptor for named pipe on Windows
+
+  http.pprof.enabled:
+    type: boolean
+    description: Enable pprof endpoints
+    default: false
+
+  http.pprof.block_profile_rate:
+    type: integer
+    description: Sampling rate for block profiling
+    default: 0
+
+  http.pprof.mem_profile_rate:
+    type: integer
+    description: Sampling rate for memory profiling
+    default: 524288
+
+  http.pprof.mutex_profile_rate:
+    type: integer
+    description: Sampling rate for mutex profiling
+    default: 0
+
+  # ================= Migration Configuration =================
+  migration.6_to_7.enabled:
+    type: boolean
+    description: Enable 6.7 migration aliases
+    default: false
+
+additionalProperties: true

@@ -27,7 +27,7 @@ import (
 const Name = fbcmd.Name
 
 // Filebeat build the beat root command for executing filebeat and it's subcommands.
-func Filebeat() *cmd.BeatsRootCmd {
+func Filebeat(schema []byte) *cmd.BeatsRootCmd {
 	settings := fbcmd.FilebeatSettings("")
 	globalProcs, err := processors.NewPluginConfigFromList(defaultProcessors())
 	if err != nil { // these are hard-coded, shouldn't fail
@@ -35,6 +35,7 @@ func Filebeat() *cmd.BeatsRootCmd {
 	}
 	settings.Processing = processing.MakeDefaultSupport(true, globalProcs, processing.WithECS, processing.WithHost, processing.WithAgentMeta())
 	settings.ElasticLicensed = true
+	settings.Schema = schema
 	settings.Initialize = append(settings.Initialize, include.InitializeModule)
 	command := fbcmd.Filebeat(inputs.Init, settings)
 	command.PersistentPreRun = func(cmd *cobra.Command, args []string) {

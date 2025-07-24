@@ -5,11 +5,15 @@
 package main
 
 import (
+	_ "embed"
 	"os"
 	_ "time/tzdata" // for timezone handling
 
 	"github.com/elastic/beats/v7/x-pack/filebeat/cmd"
 )
+
+//go:embed filebeat.schema.yml
+var schema []byte
 
 // The basic model of execution:
 // - input: finds files in paths/globs to harvest, starts harvesters
@@ -20,7 +24,7 @@ import (
 // Finally, input uses the registrar information, on restart, to
 // determine where in each file to restart a harvester.
 func main() {
-	if err := cmd.Filebeat().Execute(); err != nil {
+	if err := cmd.Filebeat(schema).Execute(); err != nil {
 		os.Exit(1)
 	}
 }

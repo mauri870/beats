@@ -31,6 +31,7 @@ import (
 // GenValidateCmd generates the command version for a Beat.
 func GenValidateCmd(settings instance.Settings) *cobra.Command {
 	var printSchema bool
+	var writeReference string
 	command := &cobra.Command{
 		Use:   "validate",
 		Short: "Validate the provided configuration file",
@@ -39,6 +40,14 @@ func GenValidateCmd(settings instance.Settings) *cobra.Command {
 			if printSchema {
 				fmt.Println(string(schema))
 				return nil
+			}
+
+			if writeReference != "" {
+				if err := writeConfigReference(settings, writeReference, schema); err != nil {
+					return fmt.Errorf("failed to write reference config: %w", err)
+				}
+
+				fmt.Printf("%s created\n", writeReference)
 			}
 
 			configFile, err := cmd.Flags().GetString("c")
@@ -87,5 +96,19 @@ func GenValidateCmd(settings instance.Settings) *cobra.Command {
 	}
 
 	command.Flags().BoolVarP(&printSchema, "print-schema", "p", false, "Print the validation schema and exit")
+	command.Flags().StringVar(&writeReference, "write-reference", "", "Generate a reference configuration file based on the schema")
 	return command
+}
+
+func writeConfigReference(settings instance.Settings, referenceFilename string, schema []byte) error {
+	// TODO:
+	// 1. create a file named "referenceFilename"
+	// 2. Parse the schema yaml
+	// 3. Loop through the fields, accumulating it in a mapstr.M with the file structure
+	// 4. Serialize mapstr.M to yaml
+	// 5. Write the yaml to the file
+	// 6. test it with: cd x-pack/metricbeat && go run . validate --write-reference ./reference.yml
+	// 7. Inspect reference.yml and compare it to the current metricbeat.reference.yml
+	// 8. Adjust the code or schema to match the current reference.yml
+	return nil
 }

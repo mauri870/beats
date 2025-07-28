@@ -24,6 +24,7 @@ import (
 	"github.com/elastic/beats/v7/libbeat/beat"
 	"github.com/elastic/beats/v7/libbeat/processors"
 	"github.com/elastic/beats/v7/libbeat/processors/script/javascript"
+	"github.com/elastic/beats/v7/libbeat/processors/script/quickjs"
 	"github.com/elastic/elastic-agent-libs/config"
 
 	// Register javascript modules with the processor.
@@ -46,6 +47,8 @@ func New(c *config.C) (beat.Processor, error) {
 	switch strings.ToLower(config.Lang) {
 	case "javascript", "js":
 		return javascript.New(c)
+	case "quickjs", "es2023":
+		return quickjs.New(c)
 	default:
 		return nil, fmt.Errorf("script type must be declared (e.g. type: javascript)")
 	}

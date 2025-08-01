@@ -17,7 +17,12 @@
 
 package testing
 
-import "net"
+import (
+	"net"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+)
 
 // AvailableTCP4Port returns an unused TCP port for 127.0.0.1.
 func AvailableTCP4Port() (uint16, error) {
@@ -35,4 +40,16 @@ func AvailableTCP4Port() (uint16, error) {
 	tcpAddr := uint16(listener.Addr().(*net.TCPAddr).Port)
 
 	return tcpAddr, nil
+}
+
+func MustAvailableTCP4Port(t *testing.T) uint16 {
+	resolved, err := net.ResolveTCPAddr("tcp4", "127.0.0.1:0")
+	require.NoError(t, err, "Failed to resolve TCP address")
+
+	listener, err := net.ListenTCP("tcp4", resolved)
+	require.NoError(t, err, "Failed to listen on TCP address")
+	defer listener.Close()
+
+	tcpAddr := uint16(listener.Addr().(*net.TCPAddr).Port)
+	return tcpAddr
 }

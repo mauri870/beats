@@ -19,8 +19,10 @@ import (
 
 	"github.com/gofrs/uuid/v5"
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	libbeattesting "github.com/elastic/beats/v7/libbeat/testing"
 	"github.com/elastic/beats/v7/libbeat/tests/integration"
 	"github.com/elastic/elastic-agent-libs/mapstr"
 	"github.com/elastic/elastic-agent-libs/testing/estools"
@@ -84,7 +86,7 @@ http.port: {{.MonitoringPort}}
 		ESURL:          fmt.Sprintf("%s://%s", host.Scheme, host.Host),
 		Username:       user,
 		Password:       password,
-		MonitoringPort: 5078,
+		MonitoringPort: int(libbeattesting.MustAvailableTCP4Port(t)),
 	}
 
 	var configBuffer bytes.Buffer
@@ -97,7 +99,7 @@ http.port: {{.MonitoringPort}}
 
 	var mbConfigBuffer bytes.Buffer
 	optionsValue.Index = "logs-integration-mb-" + namespace
-	optionsValue.MonitoringPort = 5079
+	optionsValue.MonitoringPort = int(libbeattesting.MustAvailableTCP4Port(t))
 	require.NoError(t, template.Must(template.New("config").Parse(beatsCfgFile)).Execute(&mbConfigBuffer, optionsValue))
 	metricbeat := integration.NewBeat(t, "metricbeat", "../../metricbeat.test")
 	metricbeat.WriteConfigFile(mbConfigBuffer.String())
@@ -111,7 +113,7 @@ http.port: {{.MonitoringPort}}
 	var metricbeatDocs estools.Documents
 	var otelDocs estools.Documents
 	var err error
-	require.Eventually(t,
+	ok := assert.Eventually(t,
 		func() bool {
 			findCtx, findCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer findCancel()
@@ -124,7 +126,9 @@ http.port: {{.MonitoringPort}}
 
 			return otelDocs.Hits.Total.Value >= 1 && metricbeatDocs.Hits.Total.Value >= 1
 		},
-		2*time.Minute, 1*time.Second, "Expected at least one ingested metric event, got metricbeat: %d, otel: %d", metricbeatDocs.Hits.Total.Value, otelDocs.Hits.Total.Value)
+		2*time.Minute, 1*time.Second)
+	require.True(t, ok, "expected at least 1 log for metricbeat and otel receiver, got metricbeat: %d, otel: %d",
+		metricbeatDocs.Hits.Total.Value, otelDocs.Hits.Total.Value)
 
 	otelDoc := otelDocs.Hits.Hits[0]
 	metricbeatDoc := metricbeatDocs.Hits.Hits[0]
@@ -274,7 +278,7 @@ processors:
 	var otelDocs estools.Documents
 	var err error
 
-	require.Eventuallyf(t,
+	ok := assert.Eventuallyf(t,
 		func() bool {
 			findCtx, findCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer findCancel()
@@ -287,14 +291,15 @@ processors:
 
 			return otelDocs.Hits.Total.Value >= 1 && metricbeatDocs.Hits.Total.Value >= 1
 		},
-		2*time.Minute, 1*time.Second, "expected at least 1 log")
+		2*time.Minute, 1*time.Second, "expected at least a single log for metricbeat and otel indees")
+	require.True(t, ok, "expected at least 1 log for metricbeat and otel receiver, got metricbeat: %d, otel: %d",
+		metricbeatDocs.Hits.Total.Value, otelDocs.Hits.Total.Value)
 	otelDoc := otelDocs.Hits.Hits[0]
 	metricbeatDoc := metricbeatDocs.Hits.Hits[0]
 	assertMapstrKeysEqual(t, otelDoc.Source, metricbeatDoc.Source, []string{}, "expected documents keys to be equal")
 }
 
 func TestMetricbeatOTelMultipleReceiversE2E(t *testing.T) {
-	t.Skip("Flaky test, see https://github.com/elastic/beats/issues/45631")
 	integration.EnsureESIsRunning(t)
 
 	host := integration.GetESURL(t, "http")
@@ -326,11 +331,11 @@ func TestMetricbeatOTelMultipleReceiversE2E(t *testing.T) {
 		Password: password,
 		Receivers: []receiverConfig{
 			{
-				MonitoringPort: 5066,
+				MonitoringPort: int(libbeattesting.MustAvailableTCP4Port(t)),
 				PathHome:       filepath.Join(metricbeatOTel.TempDir(), "r1"),
 			},
 			{
-				MonitoringPort: 5067,
+				MonitoringPort: int(libbeattesting.MustAvailableTCP4Port(t)),
 				PathHome:       filepath.Join(metricbeatOTel.TempDir(), "r2"),
 			},
 		},
@@ -414,7 +419,7 @@ service:
 	var r0Docs, r1Docs estools.Documents
 	var err error
 
-	require.Eventuallyf(t,
+	ok := assert.Eventually(t,
 		func() bool {
 			findCtx, findCancel := context.WithTimeout(t.Context(), 10*time.Second)
 			defer findCancel()
@@ -426,7 +431,7 @@ service:
 					},
 				},
 			}, ".ds-"+otelConfig.Index+"*", es)
-			require.NoError(t, err)
+			require.NoError(t, err, "failed to query for receiver 0 logs")
 
 			r1Docs, err = estools.PerformQueryForRawQuery(findCtx, map[string]any{
 				"query": map[string]any{
@@ -435,11 +440,12 @@ service:
 					},
 				},
 			}, ".ds-"+otelConfig.Index+"*", es)
-			require.NoError(t, err)
+			require.NoError(t, err, "failed to query for receiver 1 logs")
 
 			return r0Docs.Hits.Total.Value >= 1 && r1Docs.Hits.Total.Value >= 1
 		},
 		1*time.Minute, 100*time.Millisecond, "expected at least 1 log for each receiver")
+	require.True(t, ok, "expected at least 1 log for each receiver, got r0: %d, r1: %d", r0Docs.Hits.Total.Value, r1Docs.Hits.Total.Value)
 	assertMapstrKeysEqual(t, r0Docs.Hits.Hits[0].Source, r1Docs.Hits.Hits[0].Source, []string{}, "expected documents keys to be equal")
 	for _, rec := range otelConfig.Receivers {
 		assertMonitoring(t, rec.MonitoringPort)

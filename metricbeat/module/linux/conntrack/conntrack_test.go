@@ -68,7 +68,8 @@ func TestFetch(t *testing.T) {
 func BenchmarkFetch(b *testing.B) {
 	f := mbtest.NewReportingMetricSetV2Error(b, getConfig())
 	for range b.N {
-		mbtest.ReportingFetchV2Error(f)
+		_, errs := mbtest.ReportingFetchV2Error(f)
+		require.Empty(b, errs, "fetch should not return an error")
 	}
 }
 
@@ -85,7 +86,7 @@ func TestFetchConntrackModuleNotLoaded(t *testing.T) {
 	require.Len(t, errs, 1)
 	err := errors.Join(errs...)
 	assert.ErrorAs(t, err, &mb.PartialMetricsError{})
-	assert.Contains(t, err.Error(), "error fetching conntrack stats: nf_conntrack kernel module not loaded")
+	assert.Contains(t, err.Error(), "nf_conntrack kernel module not loaded, and netlink requires root privileges")
 	require.Empty(t, events)
 }
 
@@ -95,68 +96,4 @@ func getConfig() map[string]interface{} {
 		"metricsets": []string{"conntrack"},
 		"hostfs":     "./_meta/testdata",
 	}
-}
-
-func TestParseConntrackCLIStats(t *testing.T) {
-	// 'conntrack --stats' running as a normal user should fallback to obsolete procfs fields
-	t.Run("user", func(t *testing.T) {
-		in := `cpu=0           entries=42 clashres=0 found=0 new=0 invalid=0 ignore=3271028 delete=0 chainlength=0 insert=0 insert_failed=0 drop=0 early_drop=0 icmp_error=0 expect_new=0 expect_create=0 expect_delete=0 search_restart=0
-cpu=1           entries=109 clashres=0 found=0 new=0 invalid=122 ignore=0 delete=0 chainlength=0 insert=0 insert_failed=0 drop=0 early_drop=0 icmp_error=0 expect_new=0 expect_create=0 expect_delete=0 search_restart=3
-	`
-
-		stats, err := parseConntrackCLIStats(in)
-		require.NoError(t, err)
-		assert.Len(t, stats, 2)
-
-		// CPU 0
-		assert.Equal(t, uint64(0), stats[0].Drop)
-		assert.Equal(t, uint64(0), stats[0].EarlyDrop)
-		assert.Equal(t, uint64(42), stats[0].Entries)
-		assert.Equal(t, uint64(0), stats[0].Found)
-		assert.Equal(t, uint64(3271028), stats[0].Ignore)
-		assert.Equal(t, uint64(0), stats[0].InsertFailed)
-		assert.Equal(t, uint64(0), stats[0].Invalid)
-		assert.Equal(t, uint64(0), stats[0].SearchRestart)
-
-		// CPU 1
-		assert.Equal(t, uint64(0), stats[1].Drop)
-		assert.Equal(t, uint64(0), stats[1].EarlyDrop)
-		assert.Equal(t, uint64(109), stats[1].Entries)
-		assert.Equal(t, uint64(0), stats[1].Found)
-		assert.Equal(t, uint64(0), stats[1].Ignore)
-		assert.Equal(t, uint64(0), stats[1].InsertFailed)
-		assert.Equal(t, uint64(122), stats[1].Invalid)
-		assert.Equal(t, uint64(3), stats[1].SearchRestart)
-	})
-
-	// 'conntrack --stats' running as root uses netfilter fields
-	t.Run("root", func(t *testing.T) {
-		in := `cpu=0           found=0 invalid=109 insert=0 insert_failed=0 drop=0 early_drop=0 error=0 search_restart=0 clash_resolve=0 chaintoolong=0
-cpu=1           found=0 invalid=109 insert=0 insert_failed=0 drop=0 early_drop=0 error=0 search_restart=0 clash_resolve=0 chaintoolong=0
-	`
-
-		stats, err := parseConntrackCLIStats(in)
-		require.NoError(t, err)
-		assert.Len(t, stats, 2)
-
-		// CPU 0
-		assert.Equal(t, uint64(0), stats[0].Drop)
-		assert.Equal(t, uint64(0), stats[0].EarlyDrop)
-		assert.Equal(t, uint64(0), stats[0].Entries)
-		assert.Equal(t, uint64(0), stats[0].Found)
-		assert.Equal(t, uint64(0), stats[0].Ignore)
-		assert.Equal(t, uint64(0), stats[0].InsertFailed)
-		assert.Equal(t, uint64(109), stats[0].Invalid)
-		assert.Equal(t, uint64(0), stats[0].SearchRestart)
-
-		// CPU 1
-		assert.Equal(t, uint64(0), stats[1].Drop)
-		assert.Equal(t, uint64(0), stats[1].EarlyDrop)
-		assert.Equal(t, uint64(0), stats[1].Entries)
-		assert.Equal(t, uint64(0), stats[1].Found)
-		assert.Equal(t, uint64(0), stats[1].Ignore)
-		assert.Equal(t, uint64(0), stats[1].InsertFailed)
-		assert.Equal(t, uint64(109), stats[1].Invalid)
-		assert.Equal(t, uint64(0), stats[1].SearchRestart)
-	})
 }

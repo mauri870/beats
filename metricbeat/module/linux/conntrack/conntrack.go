@@ -18,13 +18,10 @@
 package conntrack
 
 import (
-	"bytes"
 	"fmt"
 	"os"
-	"os/exec"
-	"strconv"
-	"strings"
 
+	"github.com/florianl/go-conntrack"
 	"github.com/prometheus/procfs"
 
 	"github.com/elastic/beats/v7/libbeat/common/cfgwarn"
@@ -63,20 +60,38 @@ func New(base mb.BaseMetricSet) (mb.MetricSet, error) {
 		return nil, fmt.Errorf("unexpected module type: %T", base.Module())
 	}
 
-	var fetchFunc fetchFunc
-	if _, err := exec.LookPath("conntrack"); err == nil {
-		base.Logger().Info("Using conntrack(8) to fetch conntrack metrics")
-		fetchFunc = fetchConntrackCLIMetrics
-	} else {
-		base.Logger().Info("Using procfs to fetch conntrack metrics")
-		fetchFunc = fetchProcFSConntrackMetrics
-	}
-
-	return &MetricSet{
+	mset := &MetricSet{
 		BaseMetricSet: base,
 		mod:           sys,
-		fetchFunc:     fetchFunc,
-	}, nil
+	}
+
+	err := mset.selectMetricsSource()
+	if err != nil {
+		return nil, fmt.Errorf("error selecting metrics source: %w", err)
+	}
+
+	return mset, nil
+}
+
+func (m *MetricSet) selectMetricsSource() error {
+	var f fetchFunc
+	procExists, err := fileExists(m.mod.ResolveHostFS("/proc/net/stat/nf_conntrack"))
+	if err != nil {
+		return fmt.Errorf("error checking for procfs: %w", err)
+	}
+
+	if procExists {
+		m.Logger().Info("Using procfs to fetch conntrack metrics")
+		f = m.fetchProcFSMetrics
+	} else if os.Geteuid() == 0 { // fallback to netlink, requires sudo
+		m.Logger().Info("Using netlink to fetch conntrack metrics")
+		f = m.fetchNetlinkMetrics
+	} else {
+		return fmt.Errorf("nf_conntrack kernel module not loaded, and netlink requires root privileges")
+	}
+
+	m.fetchFunc = f
+	return nil
 }
 
 // Fetch methods implements the data gathering and data conversion to the right
@@ -118,8 +133,17 @@ func (m *MetricSet) Fetch(report mb.ReporterV2) error {
 	return nil
 }
 
-func fetchProcFSConntrackMetrics() ([]procfs.ConntrackStatEntry, error) {
-	newFS, err := procfs.NewFS("/proc")
+func fileExists(path string) (ok bool, err error) {
+	if _, err = os.Stat(path); err == nil {
+		ok = true
+	} else if os.IsNotExist(err) {
+		err = nil
+	}
+	return ok, err
+}
+
+func (m *MetricSet) fetchProcFSMetrics() ([]procfs.ConntrackStatEntry, error) {
+	newFS, err := procfs.NewFS(m.mod.ResolveHostFS("/proc"))
 	if err != nil {
 		return nil, fmt.Errorf("error creating new Host FS at /proc: %w", err)
 	}
@@ -133,94 +157,45 @@ func fetchProcFSConntrackMetrics() ([]procfs.ConntrackStatEntry, error) {
 	return conntrackStats, nil
 }
 
-func fetchConntrackCLIMetrics() ([]procfs.ConntrackStatEntry, error) {
-	cmd := exec.Command("conntrack", "--stats")
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-
-	out, err := cmd.Output()
-	outStr := strings.TrimSpace(string(out))
+func (m *MetricSet) fetchNetlinkMetrics() ([]procfs.ConntrackStatEntry, error) {
+	nfct, err := conntrack.Open(&conntrack.Config{})
 	if err != nil {
-		if strings.HasPrefix(outStr, "cpu=") {
-			// Without sudo, conntrack falls back to procfs but logs a permission error and exit code 1.
-			// It reports valid stats to stdout.
-		} else {
-			return nil, fmt.Errorf("error invoking 'conntrack --stats': %w: %s", err, stderr.String())
-		}
+		return nil, err
 	}
+	defer nfct.Close()
 
-	stats, err := parseConntrackCLIStats(outStr)
+	cpuStats, err := nfct.DumpCPUStats(conntrack.Conntrack)
 	if err != nil {
-		return nil, fmt.Errorf("error parsing conntrack stats: %w", err)
+		return nil, err
 	}
 
-	// compute total entries
-	if len(stats) > 0 && stats[0].Entries == 0 {
-		cmd := exec.Command("conntrack", "--count")
-		out, err = cmd.Output()
-		outStr := strings.TrimSpace(string(out))
-		if err != nil {
-			if outStr == "" {
-				return nil, fmt.Errorf("error invoking 'conntrack --count': %w: %s", err, stderr.String())
-			}
-		}
+	stats := make([]procfs.ConntrackStatEntry, 0, len(cpuStats))
 
-		count, err := strconv.ParseUint(outStr, 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing conntrack entries count: %w", err)
-		}
-		stats[0].Entries = count
+	for _, stat := range cpuStats {
+		stats = append(stats, procfs.ConntrackStatEntry{
+			Found:   uint64(*stat.Found),
+			Invalid: uint64(*stat.Invalid),
+			// Ignore is not available in netlink
+			Ignore:        0,
+			InsertFailed:  uint64(*stat.InsertFailed),
+			Drop:          uint64(*stat.Drop),
+			EarlyDrop:     uint64(*stat.EarlyDrop),
+			SearchRestart: uint64(*stat.SearchRestart),
+		})
 	}
 
+	// Compute entries field
+	// TODO(mauri870): find a way to get the count without dumping all connections
+	entries4, err := nfct.Dump(conntrack.Conntrack, conntrack.IPv4)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dump IPv4 entries: %w", err)
+	}
+
+	entries6, err := nfct.Dump(conntrack.Conntrack, conntrack.IPv6)
+	if err != nil {
+		return nil, fmt.Errorf("failed to dump IPv6 entries: %w", err)
+	}
+
+	stats[0].Entries = uint64(len(entries4) + len(entries6))
 	return stats, nil
-}
-
-func parseConntrackCLIStats(data string) ([]procfs.ConntrackStatEntry, error) {
-	lines := strings.Split(data, "\n")
-	statsEntries := make([]procfs.ConntrackStatEntry, 0, len(lines))
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "cpu=") {
-			continue
-		}
-
-		fields := strings.Fields(line)
-		entry := procfs.ConntrackStatEntry{}
-
-		for _, field := range fields {
-			kv := strings.SplitN(field, "=", 2)
-			if len(kv) != 2 {
-				continue
-			}
-			key, valStr := kv[0], kv[1]
-			val, err := strconv.ParseUint(valStr, 10, 64)
-			if err != nil {
-				return nil, fmt.Errorf("invalid integer for %s: %w", key, err)
-			}
-
-			switch key {
-			case "entries":
-				entry.Entries = val
-			case "found":
-				entry.Found = val
-			case "invalid":
-				entry.Invalid = val
-			case "ignore":
-				entry.Ignore = val
-			case "insert_failed":
-				entry.InsertFailed = val
-			case "drop":
-				entry.Drop = val
-			case "early_drop":
-				entry.EarlyDrop = val
-			case "search_restart":
-				entry.SearchRestart = val
-			}
-		}
-
-		statsEntries = append(statsEntries, entry)
-	}
-
-	return statsEntries, nil
 }

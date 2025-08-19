@@ -238,7 +238,7 @@ require (
 )
 
 require (
-	github.com/florianl/go-conntrack v0.4.0
+	github.com/ti-mo/conntrack v0.5.2
 	go.opentelemetry.io/collector/client v1.36.0
 	go.opentelemetry.io/collector/pipeline v0.130.0
 	go.opentelemetry.io/collector/processor v1.36.0
@@ -415,6 +415,7 @@ require (
 	github.com/spiffe/go-spiffe/v2 v2.5.0 // indirect
 	github.com/stoewer/go-strcase v1.2.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
+	github.com/ti-mo/netfilter v0.5.3 // indirect
 	github.com/tklauser/numcpus v0.8.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xdg-go/pbkdf2 v1.0.0 // indirect

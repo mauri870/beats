@@ -21,8 +21,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/florianl/go-conntrack"
 	"github.com/prometheus/procfs"
+	"github.com/ti-mo/conntrack"
 
 	"github.com/elastic/beats/v7/libbeat/common/cfgwarn"
 	"github.com/elastic/beats/v7/metricbeat/mb"
@@ -158,13 +158,13 @@ func (m *MetricSet) fetchProcFSMetrics() ([]procfs.ConntrackStatEntry, error) {
 }
 
 func (m *MetricSet) fetchNetlinkMetrics() ([]procfs.ConntrackStatEntry, error) {
-	nfct, err := conntrack.Open(&conntrack.Config{})
+	conn, err := conntrack.Dial(nil)
 	if err != nil {
 		return nil, err
 	}
-	defer nfct.Close()
+	defer conn.Close()
 
-	cpuStats, err := nfct.DumpCPUStats(conntrack.Conntrack)
+	cpuStats, err := conn.Stats()
 	if err != nil {
 		return nil, err
 	}
@@ -173,29 +173,21 @@ func (m *MetricSet) fetchNetlinkMetrics() ([]procfs.ConntrackStatEntry, error) {
 
 	for _, stat := range cpuStats {
 		stats = append(stats, procfs.ConntrackStatEntry{
-			Found:   uint64(*stat.Found),
-			Invalid: uint64(*stat.Invalid),
-			// Ignore is not available in netlink
-			Ignore:        0,
-			InsertFailed:  uint64(*stat.InsertFailed),
-			Drop:          uint64(*stat.Drop),
-			EarlyDrop:     uint64(*stat.EarlyDrop),
-			SearchRestart: uint64(*stat.SearchRestart),
+			Found:         uint64(stat.Found),
+			Invalid:       uint64(stat.Invalid),
+			Ignore:        uint64(stat.Ignore),
+			InsertFailed:  uint64(stat.InsertFailed),
+			Drop:          uint64(stat.Drop),
+			EarlyDrop:     uint64(stat.EarlyDrop),
+			SearchRestart: uint64(stat.SearchRestart),
 		})
 	}
 
-	// Compute entries field
-	// TODO(mauri870): find a way to get the count without dumping all connections
-	entries4, err := nfct.Dump(conntrack.Conntrack, conntrack.IPv4)
+	globalStats, err := conn.StatsGlobal()
 	if err != nil {
-		return nil, fmt.Errorf("failed to dump IPv4 entries: %w", err)
+		return nil, fmt.Errorf("failed to fetch global stats: %w", err)
 	}
 
-	entries6, err := nfct.Dump(conntrack.Conntrack, conntrack.IPv6)
-	if err != nil {
-		return nil, fmt.Errorf("failed to dump IPv6 entries: %w", err)
-	}
-
-	stats[0].Entries = uint64(len(entries4) + len(entries6))
+	stats[0].Entries = uint64(globalStats.Entries)
 	return stats, nil
 }

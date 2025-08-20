@@ -83,11 +83,9 @@ func (m *MetricSet) selectMetricsSource() error {
 	if procExists {
 		m.Logger().Info("Using procfs to fetch conntrack metrics")
 		f = m.fetchProcFSMetrics
-	} else if os.Geteuid() == 0 { // fallback to netlink, requires sudo
-		m.Logger().Info("Using netlink to fetch conntrack metrics")
+	} else { // fallback to netlink
+		m.Logger().Info("nf_conntrack kernel module not loaded, using netlink to fetch conntrack metrics")
 		f = m.fetchNetlinkMetrics
-	} else {
-		return fmt.Errorf("nf_conntrack kernel module not loaded, and netlink requires root privileges")
 	}
 
 	m.fetchFunc = f

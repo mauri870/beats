@@ -18,15 +18,12 @@
 package conntrack
 
 import (
-	"errors"
-	"os"
-	"path/filepath"
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/elastic/beats/v7/metricbeat/mb"
 	mbtest "github.com/elastic/beats/v7/metricbeat/mb/testing"
 	_ "github.com/elastic/beats/v7/metricbeat/module/linux"
 	"github.com/elastic/elastic-agent-libs/mapstr"
@@ -73,21 +70,38 @@ func BenchmarkFetch(b *testing.B) {
 	}
 }
 
-func TestFetchConntrackModuleNotLoaded(t *testing.T) {
-	// Create a temporary directory to simulate a missing /proc/net/stat/nf_conntrack file
-	tmpDir := t.TempDir()
-	assert.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "proc/net/stat"), 0755))
-	c := getConfig()
-	c["hostfs"] = tmpDir
+func BenchmarkFetchNetlink(b *testing.B) {
+	cfg := getConfig()
+	cfg["hostfs"] = b.TempDir()
+	// TODO: In order to run this benchmark it needs CAP_NET_ADMIN
+	f := mbtest.NewReportingMetricSetV2Error(b, cfg)
+	for range b.N {
+		_, errs := mbtest.ReportingFetchV2Error(f)
+		require.Empty(b, errs, "fetch should not return an error")
+	}
+}
 
-	f := mbtest.NewReportingMetricSetV2Error(t, c)
+func TestFetchNetlink(t *testing.T) {
+	// hide /proc/net/stat/nf_conntrack file so it uses netlink
+	cfg := getConfig()
+	cfg["hostfs"] = t.TempDir()
+
+	// TODO: In order to run this test it needs CAP_NET_ADMIN
+	f := mbtest.NewReportingMetricSetV2Error(t, cfg)
 	events, errs := mbtest.ReportingFetchV2Error(f)
+	require.Empty(t, errs, "fetch should not return an error")
 
-	require.Len(t, errs, 1)
-	err := errors.Join(errs...)
-	assert.ErrorAs(t, err, &mb.PartialMetricsError{})
-	assert.Contains(t, err.Error(), "nf_conntrack kernel module not loaded, and netlink requires root privileges")
-	require.Empty(t, events)
+	require.NotEmpty(t, events)
+	rawEvent := events[0].BeatEvent("linux", "conntrack").Fields["linux"].(mapstr.M)["conntrack"].(mapstr.M)["summary"].(mapstr.M)
+	keys := maps.Keys(rawEvent)
+	assert.Contains(t, keys, "drop")
+	assert.Contains(t, keys, "early_drop")
+	assert.Contains(t, keys, "entries")
+	assert.Contains(t, keys, "found")
+	assert.Contains(t, keys, "ignore")
+	assert.Contains(t, keys, "insert_failed")
+	assert.Contains(t, keys, "invalid")
+	assert.Contains(t, keys, "search_restart")
 }
 
 func getConfig() map[string]interface{} {

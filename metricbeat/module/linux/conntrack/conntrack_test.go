@@ -18,7 +18,6 @@
 package conntrack
 
 import (
-	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -68,40 +67,6 @@ func BenchmarkFetch(b *testing.B) {
 		_, errs := mbtest.ReportingFetchV2Error(f)
 		require.Empty(b, errs, "fetch should not return an error")
 	}
-}
-
-func BenchmarkFetchNetlink(b *testing.B) {
-	cfg := getConfig()
-	cfg["hostfs"] = b.TempDir()
-	// TODO: In order to run this benchmark it needs CAP_NET_ADMIN
-	f := mbtest.NewReportingMetricSetV2Error(b, cfg)
-	for range b.N {
-		_, errs := mbtest.ReportingFetchV2Error(f)
-		require.Empty(b, errs, "fetch should not return an error")
-	}
-}
-
-func TestFetchNetlink(t *testing.T) {
-	// hide /proc/net/stat/nf_conntrack file so it uses netlink
-	cfg := getConfig()
-	cfg["hostfs"] = t.TempDir()
-
-	// TODO: In order to run this test it needs CAP_NET_ADMIN
-	f := mbtest.NewReportingMetricSetV2Error(t, cfg)
-	events, errs := mbtest.ReportingFetchV2Error(f)
-	require.Empty(t, errs, "fetch should not return an error")
-
-	require.NotEmpty(t, events)
-	rawEvent := events[0].BeatEvent("linux", "conntrack").Fields["linux"].(mapstr.M)["conntrack"].(mapstr.M)["summary"].(mapstr.M)
-	keys := maps.Keys(rawEvent)
-	assert.Contains(t, keys, "drop")
-	assert.Contains(t, keys, "early_drop")
-	assert.Contains(t, keys, "entries")
-	assert.Contains(t, keys, "found")
-	assert.Contains(t, keys, "ignore")
-	assert.Contains(t, keys, "insert_failed")
-	assert.Contains(t, keys, "invalid")
-	assert.Contains(t, keys, "search_restart")
 }
 
 func getConfig() map[string]interface{} {

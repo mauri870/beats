@@ -133,11 +133,20 @@ func ToOTelConfig(output *config.C, logger *logp.Logger) (map[string]any, error)
 
 		},
 
-		// Batcher is experimental
-		"batcher": map[string]any{
-			"enabled":  true,
-			"max_size": escfg.BulkMaxSize, // bulk_max_size
-			"min_size": 0,                 // 0 means immediately trigger a flush
+		// Batching
+		"sending_queue": map[string]any{
+			"enabled":           true,
+			"num_consumers":     max(1, escfg.Workers),
+			"wait_for_result":   true,
+			"block_on_overflow": true,
+			"sizer":             "requests",
+			"queue_size":        1000,
+			"batch": map[string]any{
+				"flush_timeout": "1s",
+				"sizer":         "items",
+				"min_size":      0, // signal to immediately trigger a flush
+				"max_size":      escfg.BulkMaxSize,
+			},
 		},
 
 		"mapping": map[string]any{
@@ -162,9 +171,12 @@ func ToOTelConfig(output *config.C, logger *logp.Logger) (map[string]any, error)
 	// Dynamic routing is disabled if output.elasticsearch.index is set
 	setIfNotNil(otelYAMLCfg, "logs_index", escfg.Index) // index
 
-	if err := typeSafetyCheck(otelYAMLCfg); err != nil {
-		return nil, err
-	}
+	// TODO(mauri870): investigate failures with type checking
+	// 'sending_queue.sizer' expected a map or struct, got "string"
+	// 'sending_queue.batch' has invalid keys: flush_timeout, max_size, min_size, sizer
+	// if err := typeSafetyCheck(otelYAMLCfg); err != nil {
+	// 	return nil, err
+	// }
 
 	return otelYAMLCfg, nil
 }

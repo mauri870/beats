@@ -215,9 +215,18 @@ exporters:
     user: {{.Username}}
     password: {{.Password}}
     logs_index: {{.Index}}
-    batcher:
-      enabled: true
-      flush_timeout: 1s
+    sending_queue:
+        batch:
+            flush_timeout: 1s
+            max_size: 1600
+            min_size: 0
+            sizer: items
+        block_on_overflow: true
+        enabled: true
+        num_consumers: 1
+        queue_size: 1000
+        sizer: requests
+        wait_for_result: true
     mapping:
       mode: bodymap
 service:
@@ -404,9 +413,18 @@ exporters:
     user: {{.Username}}
     password: {{.Password}}
     logs_index: {{.Index}}
-    batcher:
-      enabled: true
-      flush_timeout: 1s
+    sending_queue:
+        batch:
+            flush_timeout: 1s
+            max_size: 1600
+            min_size: 0
+            sizer: items
+        block_on_overflow: true
+        enabled: true
+        num_consumers: 1
+        queue_size: 1000
+        sizer: requests
+        wait_for_result: true
     mapping:
       mode: bodymap
 service:
@@ -527,10 +545,6 @@ processors:
 `
 	expectedExporter := `exporters:
     elasticsearch:
-        batcher:
-            enabled: true
-            max_size: 1600
-            min_size: 0
         compression: gzip
         compression_params:
             level: 1
@@ -546,6 +560,18 @@ processors:
             initial_interval: 1s
             max_interval: 1m0s
             max_retries: 3
+        sending_queue:
+            batch:
+                flush_timeout: 1s
+                max_size: 1600
+                min_size: 0
+                sizer: items
+            block_on_overflow: true
+            enabled: true
+            num_consumers: 1
+            queue_size: 1000
+            sizer: requests
+            wait_for_result: true
         timeout: 1m30s
         user: admin`
 	expectedReceiver := `receivers:

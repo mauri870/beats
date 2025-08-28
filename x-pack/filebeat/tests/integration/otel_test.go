@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"github.com/gofrs/uuid/v5"
 
@@ -701,4 +702,88 @@ processors:
 		require.Contains(t, out, expectedReceiver)
 		require.Contains(t, out, expectedService)
 	}, 10*time.Second, 500*time.Millisecond, "failed to get output of inspect command")
+}
+
+func TestFilebeatOTelBatchRetryE2E(t *testing.T) {
+	numEvents := 100
+
+	esServer, esAddr, _, mr := integration.StartMockES(t,
+		"",   // addr
+		0,    // % duplicate
+		0,    // % too many
+		0,    // % non index
+		0,    // % too large
+		1000, // history cap
+	)
+	defer esServer.Close()
+
+	var beatsCfgFile = `
+filebeat.inputs:
+  - type: filestream
+    id: filestream-input-id
+    enabled: true
+    file_identity.native: ~
+    prospector.scanner.fingerprint.enabled: false
+    paths:
+      - %s
+output:
+  elasticsearch:
+    hosts:
+      - %s
+    username: admin
+    password: testing
+    index: %s
+    bulk_max_size: 1
+    max_retries: 3
+    backoff.init: 1s
+    backoff.max: 1s
+queue.mem.flush.timeout: 0s
+setup.template.enabled: false
+`
+
+	namespace := strings.ReplaceAll(uuid.Must(uuid.NewV4()).String(), "-", "")
+	fbOtelIndex := "logs-integration-" + namespace
+
+	// filebeat := integration.NewBeat(
+	// 	t,
+	// 	"filebeat-otel",
+	// 	"../../filebeat.test",
+	// 	"otel",
+	// )
+
+	filebeat := integration.NewBeat(
+		t,
+		"filebeat",
+		"../../filebeat.test",
+	)
+
+	logFilePath := filepath.Join(filebeat.TempDir(), "log.log")
+	filebeat.WriteConfigFile(fmt.Sprintf(beatsCfgFile, logFilePath, esAddr, fbOtelIndex))
+	writeEventsToLogFile(t, logFilePath, numEvents)
+	filebeat.Start()
+	defer filebeat.Stop()
+
+	require.EventuallyWithT(t,
+		func(ct *assert.CollectT) {
+			var rm metricdata.ResourceMetrics
+			require.NoError(ct, mr.Collect(t.Context(), &rm))
+			var bulkOK int64
+			var bulkRetried int64
+			for _, sm := range rm.ScopeMetrics {
+				for _, m := range sm.Metrics {
+					for _, dp := range m.Data.(metricdata.Sum[int64]).DataPoints {
+						switch m.Name {
+						case "bulk.create.ok":
+							bulkOK += dp.Value
+						case "bulk.create.too_many":
+							bulkRetried += dp.Value
+
+						}
+					}
+				}
+			}
+			assert.Equal(ct, int64(0), bulkRetried, "expected no retries since there is no errors")
+			assert.Equal(ct, int64(numEvents), bulkOK, "expected the number of successful bulk requests to match the number of events when bulk size is 1")
+		},
+		30*time.Second, 1*time.Second, "expected events to be delivered with proper retry behavior")
 }

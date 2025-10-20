@@ -37,6 +37,7 @@ type finishedLogger struct {
 }
 
 type eventCounter struct {
+	mu    sync.Mutex
 	added *monitoring.Uint
 	done  *monitoring.Uint
 	count *monitoring.Int
@@ -88,12 +89,22 @@ func (l *finishedLogger) Published(n int) bool {
 }
 
 func (c *eventCounter) Add(delta int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	c.count.Add(int64(delta))
 	c.added.Add(uint64(delta))
 	c.wg.Add(delta)
 }
 
 func (c *eventCounter) Done() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.count.Get() <= 0 {
+		return // prevent negative counter
+	}
+
 	c.count.Dec()
 	c.done.Inc()
 	c.wg.Done()

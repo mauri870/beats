@@ -829,6 +829,269 @@ service:
 	}
 }
 
+func TestFilebeatOTelQueueInteractions(t *testing.T) {
+	tests := []struct {
+		name                     string
+		beatsQueueTimeout        string
+		beatsQueueFlushMinEvents int
+		exporterBatchTimeout     string
+		exporterBatchMinSize     int
+		exporterBatchMaxSize     int
+		numEvents                int
+		expectedMaxLatency       time.Duration
+		description              string
+	}{
+		{
+			name:                     "single event dual timeout wait",
+			beatsQueueTimeout:        "2s",
+			beatsQueueFlushMinEvents: 10, // higher than numEvents to force timeout
+			exporterBatchTimeout:     "3s",
+			exporterBatchMinSize:     5, // higher than numEvents to force timeout
+			exporterBatchMaxSize:     50,
+			numEvents:                1,
+			expectedMaxLatency:       10 * time.Second, // 2s (beats) + 3s (exporter) + fast scan + overhead
+			description:              "Single event should wait for both beats queue timeout AND exporter batch timeout",
+		},
+		{
+			name:                     "beats bulk less than exporter min",
+			beatsQueueTimeout:        "1s",
+			beatsQueueFlushMinEvents: 3,
+			exporterBatchTimeout:     "4s",
+			exporterBatchMinSize:     10, // higher than beatsQueueFlushMinEvents
+			exporterBatchMaxSize:     50,
+			numEvents:                3,                // equals beatsQueueFlushMinEvents
+			expectedMaxLatency:       10 * time.Second, // 1s (beats should batch quickly) + 4s (exporter timeout) + fast scan + overhead
+			description:              "Beats batch smaller than exporter min_size should wait for exporter timeout",
+		},
+		{
+			name:                     "optimal configuration",
+			beatsQueueTimeout:        "1s",
+			beatsQueueFlushMinEvents: 5,
+			exporterBatchTimeout:     "2s",
+			exporterBatchMinSize:     3, // lower than beatsQueueFlushMinEvents
+			exporterBatchMaxSize:     50,
+			numEvents:                5,               // equals beatsQueueFlushMinEvents
+			expectedMaxLatency:       5 * time.Second, // should be faster due to aligned batch sizes with fast scan
+			description:              "Well-aligned queue configurations should have lower latency",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var firstEventTime, lastIngestedTime time.Time
+			eventCount := 0
+
+			// Mock ES handler that tracks ingestion timing
+			handler := func(action api.Action, event []byte) int {
+				if action.Action != "create" {
+					return http.StatusOK
+				}
+
+				mu.Lock()
+				defer mu.Unlock()
+
+				now := time.Now()
+				eventCount++
+
+				// Track first bulk request time (when first event in any bulk arrives)
+				if eventCount == 1 {
+					firstEventTime = now
+					t.Logf("First event received at mock ES at: %v", now.Format("15:04:05.000"))
+				}
+
+				if eventCount == tt.numEvents {
+					lastIngestedTime = now
+					t.Logf("Last event (%d) received at mock ES at: %v", tt.numEvents, now.Format("15:04:05.000"))
+				}
+
+				return http.StatusOK
+			}
+
+			reader := metric.NewManualReader()
+			provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+			mux := http.NewServeMux()
+			mux.Handle("/", api.NewDeterministicAPIHandler(
+				uuid.Must(uuid.NewV4()),
+				"",
+				provider,
+				time.Now().Add(24*time.Hour),
+				0,
+				0,
+				handler,
+			))
+
+			server := httptest.NewServer(mux)
+			defer server.Close()
+
+			namespace := strings.ReplaceAll(uuid.Must(uuid.NewV4()).String(), "-", "")
+			index := "logs-integration-" + namespace
+
+			beatsConfig := struct {
+				Index                    string
+				InputFile                string
+				ESEndpoint               string
+				BeatsQueueTimeout        string
+				BeatsQueueFlushMinEvents int
+				ExporterBatchTimeout     string
+				ExporterBatchMinSize     int
+				ExporterBatchMaxSize     int
+				MonitoringPort           int
+			}{
+				Index:                    index,
+				InputFile:                filepath.Join(t.TempDir(), "log.log"),
+				ESEndpoint:               server.URL,
+				BeatsQueueTimeout:        tt.beatsQueueTimeout,
+				BeatsQueueFlushMinEvents: tt.beatsQueueFlushMinEvents,
+				ExporterBatchTimeout:     tt.exporterBatchTimeout,
+				ExporterBatchMinSize:     tt.exporterBatchMinSize,
+				ExporterBatchMaxSize:     tt.exporterBatchMaxSize,
+				MonitoringPort:           int(libbeattesting.MustAvailableTCP4Port(t)),
+			}
+
+			cfg := `receivers:
+  filebeatreceiver:
+    filebeat:
+      inputs:
+        - type: filestream
+          id: filestream-input-id
+          enabled: true
+          paths:
+            - {{.InputFile}}
+          prospector.scanner.fingerprint.enabled: false
+          file_identity.native: ~
+          prospector.scanner.check_interval: 100ms
+      queue.mem:
+        flush.timeout: {{.BeatsQueueTimeout}}
+        flush.min_events: {{.BeatsQueueFlushMinEvents}}
+        events: 1000
+    logging:
+      level: debug
+    setup.template.enabled: false
+    http.enabled: true
+    http.host: localhost
+    http.port: {{.MonitoringPort}}
+exporters:
+  elasticsearch:
+    auth:
+      authenticator: beatsauth
+    compression: none
+    endpoints:
+      - {{.ESEndpoint}}
+    logs_index: {{.Index}}
+    mapping:
+      mode: bodymap
+    max_conns_per_host: 1
+    password: testing
+    retry:
+      enabled: true
+      initial_interval: 100ms
+      max_interval: 1s
+      max_retries: 3
+    sending_queue:
+      batch:
+        flush_timeout: {{.ExporterBatchTimeout}}
+        max_size: {{.ExporterBatchMaxSize}}
+        min_size: {{.ExporterBatchMinSize}}
+        sizer: items
+      block_on_overflow: true
+      enabled: true
+      num_consumers: 1
+      queue_size: 3200
+      wait_for_result: true
+    user: admin
+extensions:
+  beatsauth:
+    idle_connection_timeout: 3s
+    proxy_disable: false
+    timeout: 1m30s
+service:
+  extensions:
+    - beatsauth
+  pipelines:
+    logs:
+      receivers:
+        - filebeatreceiver
+      exporters:
+        - elasticsearch
+  telemetry:
+    logs:
+      level: DEBUG
+    metrics:
+      level: none
+`
+			var configBuffer bytes.Buffer
+			require.NoError(t,
+				template.Must(template.New("config").Parse(cfg)).Execute(&configBuffer, beatsConfig))
+
+			collector := oteltestcol.New(t, configBuffer.String())
+
+			// Record when we start writing events
+			writeStartTime := time.Now()
+			t.Logf("Configuration: Beats queue timeout=%s, min_events=%d, Exporter batch timeout=%s, min_size=%d",
+				tt.beatsQueueTimeout, tt.beatsQueueFlushMinEvents, tt.exporterBatchTimeout, tt.exporterBatchMinSize)
+			t.Logf("Writing %d events to file at: %v", tt.numEvents, writeStartTime.Format("15:04:05.000"))
+			writeEventsToLogFile(t, beatsConfig.InputFile, tt.numEvents)
+
+			// Wait for all events to be ingested
+			require.EventuallyWithT(t, func(ct *assert.CollectT) {
+				mu.Lock()
+				defer mu.Unlock()
+				assert.Equal(ct, tt.numEvents, eventCount, "expected all events to be ingested")
+			}, 30*time.Second, 100*time.Millisecond, "timed out waiting for events to be ingested")
+
+			// Measure actual latency from when we wrote events to when last event was ingested
+			mu.Lock()
+			actualLatency := lastIngestedTime.Sub(writeStartTime)
+			firstEventLatency := firstEventTime.Sub(writeStartTime)
+			mu.Unlock()
+
+			t.Logf("File write completed at: %v", writeStartTime.Format("15:04:05.000"))
+			t.Logf("First event latency: %v", firstEventLatency)
+			t.Logf("Total latency (last event): %v", actualLatency)
+
+			t.Logf("Test: %s", tt.description)
+			t.Logf("Expected max latency: %v", tt.expectedMaxLatency)
+			t.Logf("Actual latency: %v", actualLatency)
+
+			// The main goal is to demonstrate the queue interaction problem, not to pass/fail based on exact timing
+			// We log the results for analysis but use generous thresholds to avoid flaky test failures
+			maxAllowedLatency := tt.expectedMaxLatency
+			if actualLatency > maxAllowedLatency {
+				t.Logf("WARNING: Latency %v exceeded expected maximum %v. This demonstrates the queue interaction problem. %s",
+					actualLatency, maxAllowedLatency, tt.description)
+			} else {
+				t.Logf("Latency %v was within expected range %v", actualLatency, maxAllowedLatency)
+			}
+
+			// For the "optimal configuration" test, we expect it to be faster than the dual timeout scenarios
+			// But we don't fail the test if it's not, as the main purpose is to demonstrate the problem
+			if tt.name == "optimal configuration" {
+				t.Logf("Optimal configuration latency: %v (compare with other scenarios)", actualLatency)
+			}
+			require.EventuallyWithT(t, func(ct *assert.CollectT) {
+				address := fmt.Sprintf("http://localhost:%d", beatsConfig.MonitoringPort)
+				r, err := http.Get(address + "/stats") //nolint:noctx,bodyclose // fine for tests
+				assert.NoError(ct, err)
+				assert.Equal(ct, http.StatusOK, r.StatusCode, "incorrect status code")
+				var m mapstr.M
+				err = json.NewDecoder(r.Body).Decode(&m)
+				assert.NoError(ct, err)
+
+				m = m.Flatten()
+				assert.Equal(ct, float64(tt.numEvents), m["libbeat.output.events.total"], "expected total events sent to output to match")
+				assert.Equal(ct, float64(tt.numEvents), m["libbeat.output.events.acked"], "expected total events acked to match")
+			}, 10*time.Second, 100*time.Millisecond, "expected output stats to be available in monitoring endpoint")
+
+			// Wait for file input to be fully read to ensure clean test state
+			require.Eventually(t, func() bool {
+				return collector.ObservedLogs().FilterMessageSnippet(fmt.Sprintf("End of file reached: %s; Backoff now.", beatsConfig.InputFile)).Len() >= 1
+			}, 10*time.Second, 100*time.Millisecond, "timed out waiting for file input to be fully read")
+		})
+	}
+}
+
 func TestFileBeatKerberos(t *testing.T) {
 
 	wantEvents := 1

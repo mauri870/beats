@@ -12,6 +12,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -932,6 +933,258 @@ service:
 			}, 10*time.Second, 100*time.Millisecond, "expected output stats to be available in monitoring endpoint")
 		})
 	}
+}
+
+func TestFilebeatOTel413(t *testing.T) {
+	const numTestEvents = 10
+	reEventLine := regexp.MustCompile(`"message":"Line (\d+)"`)
+
+	var ingestedTestEvents []string
+	var mu sync.Mutex
+
+	deterministicHandler := func(action api.Action, event []byte) int {
+		// Handle non-bulk requests
+		if action.Action != "create" {
+			return http.StatusOK
+		}
+
+		// Extract event ID from the event data
+		if matches := reEventLine.FindSubmatch(event); len(matches) > 1 {
+			eventIDStr := string(matches[1])
+			eventKey := "Line " + eventIDStr
+
+			mu.Lock()
+			defer mu.Unlock()
+
+			// track ingested event
+			found := false
+			for _, existing := range ingestedTestEvents {
+				if existing == eventKey {
+					found = true
+					break
+				}
+			}
+			if !found {
+				ingestedTestEvents = append(ingestedTestEvents, eventKey)
+			}
+			return http.StatusOK
+		}
+
+		return http.StatusBadRequest
+	}
+
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+
+	mux := http.NewServeMux()
+
+	// Create the base deterministic handler
+	baseHandler := api.NewDeterministicAPIHandler(
+		uuid.Must(uuid.NewV4()),
+		"",
+		provider,
+		time.Now().Add(24*time.Hour),
+		0,
+		0,
+		deterministicHandler,
+	)
+
+	var status413Count atomic.Int64
+	var totalBytesCount atomic.Int64
+	mux.HandleFunc("/_bulk", func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, _ := io.ReadAll(r.Body)
+		r.Body.Close()
+		r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+		// simulate ES http.max_content_length
+		maxSize := 4096 // 4 KB
+		if len(bodyBytes) > maxSize {
+			status413Count.Add(1)
+			http.Error(w, "", http.StatusRequestEntityTooLarge)
+			return
+		}
+
+		totalBytesCount.Add(int64(len(bodyBytes)))
+
+		// Success case, forward to the deterministic handler
+		baseHandler.ServeHTTP(w, r)
+	})
+
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	namespace := strings.ReplaceAll(uuid.Must(uuid.NewV4()).String(), "-", "")
+	index := "logs-integration-" + namespace
+
+	beatsConfig := struct {
+		Index          string
+		InputFile      string
+		ESEndpoint     string
+		MaxRetries     int
+		MonitoringPort int
+		RetryOnStatus  string
+	}{
+		Index:          index,
+		InputFile:      filepath.Join(t.TempDir(), "log.log"),
+		ESEndpoint:     server.URL,
+		MaxRetries:     0, // No retries for 413
+		MonitoringPort: int(libbeattesting.MustAvailableTCP4Port(t)),
+		RetryOnStatus:  "",
+	}
+
+	cfg := `receivers:
+  filebeatreceiver:
+    filebeat:
+      inputs:
+        - type: filestream
+          id: filestream-input-id
+          enabled: true
+          paths:
+            - {{.InputFile}}
+          prospector.scanner.fingerprint.enabled: false
+          file_identity.native: ~
+    logging:
+      level: debug
+    queue.mem.flush.timeout: 0s
+    setup.template.enabled: false
+    http.enabled: true
+    http.host: localhost
+    http.port: {{.MonitoringPort}}
+exporters:
+  elasticsearch:
+    auth:
+      authenticator: beatsauth
+    compression: none
+    endpoints:
+      - {{.ESEndpoint}}
+    logs_index: {{.Index}}
+    mapping:
+      mode: bodymap
+    max_conns_per_host: 1
+    password: testing
+    retry:
+      enabled: true
+      initial_interval: 500ms
+      max_interval: 30s
+      max_retries: {{.MaxRetries}}
+{{if .RetryOnStatus}}
+      retry_on_status: [{{.RetryOnStatus}}]
+{{end}}
+    sending_queue:
+      batch:
+        flush_timeout: 10s
+        max_size: 100
+        min_size: 100
+        sizer: items
+      block_on_overflow: true
+      enabled: true
+      num_consumers: 1
+      queue_size: 3200
+      wait_for_result: true
+    user: admin
+extensions:
+  beatsauth:
+    idle_connection_timeout: 3s
+    proxy_disable: false
+    timeout: 1m30s
+service:
+  extensions:
+    - beatsauth
+  pipelines:
+    logs:
+      receivers:
+        - filebeatreceiver
+      exporters:
+        - elasticsearch
+  telemetry:
+    logs:
+      level: DEBUG
+    metrics:
+      level: none
+`
+	var configBuffer bytes.Buffer
+	require.NoError(t,
+		template.Must(template.New("config").Parse(cfg)).Execute(&configBuffer, beatsConfig))
+
+	collector := oteltestcol.New(t, configBuffer.String())
+	writeEventsToLogFile(t, beatsConfig.InputFile, numTestEvents)
+
+	// Wait for file input to be fully read
+	require.Eventually(t, func() bool {
+		return collector.ObservedLogs().FilterMessageSnippet(fmt.Sprintf("End of file reached: %s; Backoff now.", beatsConfig.InputFile)).Len() == 1
+	}, 30*time.Second, 100*time.Millisecond, "timed out waiting for file input to be fully read")
+
+	// Wait for expected events to be ingested
+	require.EventuallyWithT(t, func(ct *assert.CollectT) {
+		mu.Lock()
+		defer mu.Unlock()
+
+		// collect mock-es metrics
+		rm := metricdata.ResourceMetrics{}
+		err := reader.Collect(context.Background(), &rm)
+		assert.NoError(ct, err, "failed to collect metrics from mock-es")
+		metrics := make(map[string]int64)
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if sum, ok := m.Data.(metricdata.Sum[int64]); ok {
+					var total int64
+					for _, dp := range sum.DataPoints {
+						total += dp.Value
+					}
+					metrics[m.Name] = total
+				}
+			}
+		}
+		assert.Equal(ct, int64(numTestEvents), metrics["bulk.create.ok"], "expected bulk.create.ok metric to match ingested events")
+
+		// Request body is ~5KB for 10 events
+		// http.max_content_length is 4KB
+		// A 413 error halves the batch, resulting in 2 bulk requests
+		assert.Equal(ct, int64(1), status413Count.Load(), "expected correct number of 413 responses")
+		assert.Greater(ct, totalBytesCount.Load(), int64(4096), "expected total bytes processed to exceed max_content_length")
+		assert.Equal(ct, int64(2), metrics["bulk.create.total"], "expected 2 bulk requests due to batch splitting on 413")
+
+		// If we have the right count, validate the specific events
+		// Verify we have the correct events ingested
+		for expectedID := range numTestEvents {
+			expectedEventKey := fmt.Sprintf("Line %d", expectedID)
+			found := false
+			for _, ingested := range ingestedTestEvents {
+				if ingested == expectedEventKey {
+					found = true
+					break
+				}
+			}
+			require.True(ct, found, "expected _bulk event %s to be ingested", expectedEventKey)
+		}
+
+		// Verify we have valid line content for all ingested events
+		for _, ingested := range ingestedTestEvents {
+			require.Regexp(ct, `^Line \d+$`, ingested, "unexpected ingested event format: %s", ingested)
+		}
+	}, 30*time.Second, 1*time.Second, "timed out waiting for expected event processing")
+
+	// Confirm filebeat agreed with our accounting of ingested events
+	require.EventuallyWithT(t, func(ct *assert.CollectT) {
+		address := fmt.Sprintf("http://localhost:%d", beatsConfig.MonitoringPort)
+		r, err := http.Get(address + "/stats") //nolint:noctx,bodyclose // fine for tests
+		assert.NoError(ct, err)
+		assert.Equal(ct, http.StatusOK, r.StatusCode, "incorrect status code")
+		var m mapstr.M
+		err = json.NewDecoder(r.Body).Decode(&m)
+		assert.NoError(ct, err)
+
+		m = m.Flatten()
+
+		assert.Equal(ct, float64(numTestEvents), m["libbeat.pipeline.events.published"], "expected total events published to pipeline to match")
+
+		// For 413 errors with batch splitting, events are eventually acked
+		// Currently, otelconsumer either ACKs or fails the entire batch and has no visibility into individual event failures within the exporter.
+		// From otelconsumer's perspective, the whole batch is considered successful as long as ConsumeLogs returns no error.
+		assert.Equal(ct, float64(numTestEvents), m["libbeat.output.events.total"], "expected total events sent to output to match")
+		assert.Equal(ct, float64(numTestEvents), m["libbeat.output.events.acked"], "expected total events acked to match")
+		assert.Equal(ct, float64(0), m["libbeat.output.events.dropped"], "expected total events dropped to match")
+	}, 10*time.Second, 100*time.Millisecond, "expected output stats to be available in monitoring endpoint")
 }
 
 func TestFileBeatKerberos(t *testing.T) {

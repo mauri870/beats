@@ -634,9 +634,18 @@ func TestFilebeatOTelDocumentLevelRetries(t *testing.T) {
 			requestStatusCode:        "400",   // Entire HTTP request fails with 400
 			expectedIngestedEventIDs: []int{}, // No events ingested
 		},
+		{
+			name:                     "request 413 splits the batch",
+			requestLevelFailure:      true,                                // Request-level failures
+			failuresPerEvent:         1,                                   // fail request once
+			requestStatusCode:        "413",                               // Entire HTTP request fails with 413
+			bulkDocStatusCode:        "200",                               // Documents succeed when forwarded to handler
+			expectedIngestedEventIDs: []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, // All events ingested
+		},
 	}
 
 	const numTestEvents = 10
+	const esHTTPMaxContentLength = 4096 // 4 KB
 	reEventLine := regexp.MustCompile(`"message":"Line (\d+)"`)
 
 	for _, tt := range tests {
@@ -728,20 +737,31 @@ func TestFilebeatOTelDocumentLevelRetries(t *testing.T) {
 				deterministicHandler,
 			)
 
-			// If requestLevelFailure is true, wrap with request-level failure logic
+			var resp413Count atomic.Int64
+			var totalBytesCount atomic.Int64
+
 			if tt.requestLevelFailure {
 				// Request-level failures: entire HTTP request fails with the specified status code
 				var attemptCount int64
+
 				mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 					currentAttempt := atomic.AddInt64(&attemptCount, 1)
 
 					// For retryable status codes (429, 503), fail for failuresPerEvent times, then forward to deterministic handler
 					// For non-retryable status codes (400), always fail
+					// For 413, check content length and fail if too large
 					var shouldFail bool
 					switch tt.requestStatusCode {
 					case "400":
 						// 400 is never retryable, always fail
 						shouldFail = true
+					case "413":
+						// Simulate ES http.max_content_length
+						bodyBytes, _ := io.ReadAll(r.Body)
+						r.Body.Close()
+						r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+
+						shouldFail = len(bodyBytes) > esHTTPMaxContentLength
 					case "503", "429":
 						shouldFail = currentAttempt <= int64(tt.failuresPerEvent)
 					}
@@ -749,8 +769,20 @@ func TestFilebeatOTelDocumentLevelRetries(t *testing.T) {
 					if shouldFail {
 						status, err := strconv.Atoi(tt.requestStatusCode)
 						assert.NoError(t, err)
+
+						// Count the response status
+						resp413Count.Add(1)
+
 						http.Error(w, "", status)
 						return
+					}
+
+					// Track total bytes processed before forwarding to handler
+					if r.Body != nil {
+						bodyBytes, _ := io.ReadAll(r.Body)
+						r.Body.Close()
+						r.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
+						totalBytesCount.Add(int64(len(bodyBytes)))
 					}
 
 					// Success case - forward to the deterministic handler
@@ -821,8 +853,8 @@ exporters:
     sending_queue:
       batch:
         flush_timeout: 10s
-        max_size: 1
-        min_size: 0
+        max_size: 10
+        min_size: 10
         sizer: items
       block_on_overflow: true
       enabled: true
@@ -884,6 +916,16 @@ service:
 					}
 				}
 				assert.Equal(ct, int64(len(tt.expectedIngestedEventIDs)), metrics["bulk.create.ok"], "expected bulk.create.ok metric to match ingested events")
+
+				// Additional assertions for 413 batch splitting test
+				if tt.requestStatusCode == "413" {
+					// Request body is ~5KB for 10 events
+					// http.max_content_length is 4KB
+					// A 413 error halves the batch, resulting in 2 bulk requests
+					assert.Equal(ct, int64(1), resp413Count.Load(), "expected correct number of 413 responses")
+					assert.Greater(ct, totalBytesCount.Load(), int64(esHTTPMaxContentLength), "expected total bytes processed to exceed max_content_length")
+					assert.Equal(ct, int64(2), metrics["bulk.create.total"], "expected 2 bulk requests due to batch splitting on 413")
+				}
 
 				// If we have the right count, validate the specific events
 				// Verify we have the correct events ingested

@@ -60,8 +60,9 @@ test_regex=${2}
 stress_options=("${@:3}")
 
 # Check if the test regex matches any tests
-test_output=$(go test -run "$test_regex" -count 1 -test.v "$test_package_path" 2>&1)
-if echo "$test_output" | grep -q "no tests to run"; then
+test_list=$(go test -tags "$build_tags" -list "$test_regex" "$test_package_path" 2>/dev/null)
+
+if ! echo "$test_list" | grep -q "^Test"; then
   echo "Error: No tests match the pattern '$test_regex'"
   exit 1
 fi

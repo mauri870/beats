@@ -228,19 +228,6 @@ func newTestHandler(response string) http.Handler {
 		_, _ = io.WriteString(w, response)
 	})
 }
-<<<<<<< HEAD
-=======
-
-func genSocketPath() string {
-	randData := make([]byte, 16)
-	for i := range len(randData) {
-		randData[i] = uint8(rand.UintN(255)) //nolint:gosec // 0-255 fits in a uint8
-	}
-	socketName := base64.URLEncoding.EncodeToString(randData) + ".sock"
-	// don't use t.TempDir() because it can be too long
-	socketDir := os.TempDir()
-	return filepath.Join(socketDir, socketName)
-}
 
 func TestParse(t *testing.T) {
 	tests := []struct {
@@ -300,4 +287,3 @@ func TestParse(t *testing.T) {
 		})
 	}
 }
->>>>>>> 974b4f774 (test: add parse host configuration coverage (#48983))

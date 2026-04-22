@@ -30,6 +30,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.opentelemetry.io/collector/component"
+	"go.opentelemetry.io/collector/consumer"
+	"go.opentelemetry.io/collector/exporter"
+	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -2173,4 +2177,169 @@ exporters:
 
 	processorInstanceCount := col.ObservedLogs().FilterMessageSnippet("Configured Beat processor").Len()
 	assert.Equal(t, 1, processorInstanceCount, "expected beat processor to be configured once (shared instance), but got %d", processorInstanceCount)
+}
+
+// failingExporterState holds per-instance call and delivery counters. failCount
+// controls how many calls return a retryable error before succeeding; use a
+// very large value to simulate an exporter that never recovers.
+type failingExporterState struct {
+	failCount int64
+	calls     atomic.Int64
+	received  atomic.Int64
+}
+
+// failingExporterRegistry maps component ID string → *failingExporterState.
+// Tests register state here before starting the collector so each exporter
+// instance can look up its own counters by component ID.
+var failingExporterRegistry sync.Map
+
+func registerFailingExporter(id string, failCount int64) *failingExporterState {
+	s := &failingExporterState{failCount: failCount}
+	failingExporterRegistry.Store(id, s)
+	return s
+}
+
+type failingExporterConfig struct{}
+
+func (c *failingExporterConfig) Validate() error { return nil }
+
+type failingExporterLogs struct {
+	id string
+}
+
+func (f *failingExporterLogs) Start(context.Context, component.Host) error { return nil }
+func (f *failingExporterLogs) Shutdown(context.Context) error              { return nil }
+func (f *failingExporterLogs) Capabilities() consumer.Capabilities        { return consumer.Capabilities{} }
+
+func (f *failingExporterLogs) ConsumeLogs(_ context.Context, ld plog.Logs) error {
+	v, ok := failingExporterRegistry.Load(f.id)
+	if !ok {
+		return fmt.Errorf("no state registered for exporter %s — call registerFailingExporter first", f.id)
+	}
+	state := v.(*failingExporterState)
+	n := state.calls.Add(1)
+	if n <= state.failCount {
+		return fmt.Errorf("simulated transient failure (call %d/%d)", n, state.failCount)
+	}
+	state.received.Add(int64(ld.LogRecordCount()))
+	return nil
+}
+
+func newFailingExporterFactory() exporter.Factory {
+	return exporter.NewFactory(
+		component.MustNewType("failingexporter"),
+		func() component.Config { return &failingExporterConfig{} },
+		exporter.WithLogs(
+			func(_ context.Context, set exporter.Settings, _ component.Config) (exporter.Logs, error) {
+				return &failingExporterLogs{id: set.ID.String()}, nil
+			},
+			component.StabilityLevelDevelopment,
+		),
+	)
+}
+
+// TestFilebeatRetryOnFailure verifies that filebeatreceiver retries indefinitely
+// when downstream consumers return retryable errors (retry_on_failure.max_elapsed_time: 0),
+// while another filebeatreceiver instance with retry_on_failure disabled drops events
+// after the Beats pipeline exhausts its TTL.
+//
+// Two pipelines share the same failing exporter type, each with its own instance:
+//
+//	filebeatreceiver/with-retry  →  failingexporter/with-retry  (fails 10×, then succeeds)
+//	filebeatreceiver/no-retry   →  failingexporter/no-retry    (always fails)
+//
+// The with-retry receiver keeps calling the exporter until it succeeds; the
+// no-retry receiver gives up after the Beats pipeline drops the batch.
+func TestFilebeatRetryOnFailure(t *testing.T) {
+	const exporterFailCount = 10 // with-retry exporter fails this many times before succeeding
+
+	withRetryHome := t.TempDir()
+	noRetryHome := t.TempDir()
+
+	// Register per-instance exporter state before the collector starts.
+	withRetryState := registerFailingExporter("failingexporter/with-retry", exporterFailCount)
+	// Use a very large failCount so the no-retry exporter never succeeds.
+	noRetryState := registerFailingExporter("failingexporter/no-retry", 1_000_000)
+	t.Cleanup(func() {
+		failingExporterRegistry.Delete("failingexporter/with-retry")
+		failingExporterRegistry.Delete("failingexporter/no-retry")
+	})
+
+	cfg := fmt.Sprintf(`
+receivers:
+  # Filebeat with infinite retry: keeps calling the exporter until it succeeds.
+  filebeatreceiver/with-retry:
+    retry_on_failure:
+      enabled: true
+      initial_interval: 10ms
+      max_interval: 100ms
+      max_elapsed_time: 0
+    filebeat:
+      inputs:
+        - type: benchmark
+          enabled: true
+          message: "with-retry"
+          count: 1
+    queue.mem.flush.timeout: 0s
+    path.home: %s
+
+  # Filebeat with retry disabled: the error propagates to the Beats pipeline
+  # which drops the event after its TTL expires.
+  filebeatreceiver/no-retry:
+    retry_on_failure:
+      enabled: false
+    filebeat:
+      inputs:
+        - type: benchmark
+          enabled: true
+          message: "no-retry"
+          count: 1
+    queue.mem.flush.timeout: 0s
+    path.home: %s
+
+exporters:
+  failingexporter/with-retry: {}
+  failingexporter/no-retry: {}
+
+service:
+  pipelines:
+    logs/with-retry:
+      receivers: [filebeatreceiver/with-retry]
+      exporters: [failingexporter/with-retry]
+    logs/no-retry:
+      receivers: [filebeatreceiver/no-retry]
+      exporters: [failingexporter/no-retry]
+  telemetry:
+    metrics:
+      level: none
+`, withRetryHome, noRetryHome)
+
+	col := oteltestcol.NewWithAdditionalExporters(t, cfg, newFailingExporterFactory())
+	require.NotNil(t, col)
+
+	// Wait for the with-retry receiver to eventually deliver its event through the
+	// retry loop, and confirm the exporter was actually called more than failCount
+	// times (proving the retry wrapper kept retrying past the initial failures).
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.Equal(c, int64(1), withRetryState.received.Load(),
+			"filebeatreceiver/with-retry must deliver exactly 1 event after retrying through %d failures",
+			exporterFailCount)
+		assert.Greater(c, withRetryState.calls.Load(), int64(exporterFailCount),
+			"failingexporter/with-retry must have been called more than %d times",
+			exporterFailCount)
+	}, 30*time.Second, 100*time.Millisecond,
+		"timed out waiting for filebeatreceiver/with-retry to deliver its event")
+
+	// Allow a short window for the no-retry receiver to have attempted delivery.
+	// It only tries once (TTL=1, events are not guaranteed), so a brief wait is
+	// enough before we assert no events were ever delivered through that path.
+	require.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.GreaterOrEqual(c, noRetryState.calls.Load(), int64(1),
+			"failingexporter/no-retry must have been called at least once")
+	}, 30*time.Second, 100*time.Millisecond,
+		"timed out waiting for filebeatreceiver/no-retry to attempt delivery")
+
+	assert.Equal(t, int64(0), noRetryState.received.Load(),
+		"filebeatreceiver/no-retry must deliver 0 events: without retry_on_failure, "+
+			"events are dropped after the Beats pipeline TTL expires")
 }

@@ -7,6 +7,7 @@ package fbreceiver
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/elastic/beats/v7/filebeat/beater"
 	"github.com/elastic/beats/v7/filebeat/cmd"
@@ -40,7 +41,8 @@ func createReceiver(ctx context.Context, set receiver.Settings, baseCfg componen
 	settings.ElasticLicensed = true
 	settings.Initialize = append(settings.Initialize, include.InitializeModule)
 
-	b, err := xpInstance.NewBeatForReceiver(settings, cfg.Beatconfig, consumer, set.ID.String(), set.Logger.Core())
+	nextConsumer := newRetryLogsConsumer(cfg.RetryOnFailure, set.Logger, consumer)
+	b, err := xpInstance.NewBeatForReceiver(settings, cfg.Beatconfig, nextConsumer, set.ID.String(), set.Logger.Core())
 	if err != nil {
 		return nil, fmt.Errorf("error creating %s: %w", Name, err)
 	}
@@ -73,6 +75,12 @@ func NewFactoryWithSettings(s Settings) receiver.Factory {
 		component.MustNewType(Name),
 		func() component.Config {
 			return &Config{
+				RetryOnFailure: RetryConfig{
+					Enabled:         true,
+					InitialInterval: 1 * time.Second,
+					MaxInterval:     30 * time.Second,
+					MaxElapsedTime:  0, // infinite — matches Filebeat's guaranteed-delivery semantics
+				},
 				Beatconfig: map[string]any{
 					"path": map[string]any{
 						"home": s.Home,

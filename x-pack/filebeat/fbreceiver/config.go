@@ -15,7 +15,8 @@ import (
 // Config is config settings for filebeat receiver.  The structure of
 // which is the same as the filebeat.yml configuration file.
 type Config struct {
-	Beatconfig map[string]any `mapstructure:",remain"`
+	Beatconfig     map[string]any `mapstructure:",remain"`
+	RetryOnFailure RetryConfig    `mapstructure:"retry_on_failure"`
 }
 
 // Unmarshal implements confmap.Unmarshaler for custom unmarshaling logic.

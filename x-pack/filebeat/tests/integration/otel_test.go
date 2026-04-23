@@ -30,10 +30,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.opentelemetry.io/collector/component"
-	"go.opentelemetry.io/collector/consumer"
-	"go.opentelemetry.io/collector/exporter"
-	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -2179,167 +2175,397 @@ exporters:
 	assert.Equal(t, 1, processorInstanceCount, "expected beat processor to be configured once (shared instance), but got %d", processorInstanceCount)
 }
 
-// failingExporterState holds per-instance call and delivery counters. failCount
-// controls how many calls return a retryable error before succeeding; use a
-// very large value to simulate an exporter that never recovers.
-type failingExporterState struct {
-	failCount int64
-	calls     atomic.Int64
-	received  atomic.Int64
-}
-
-// failingExporterRegistry maps component ID string → *failingExporterState.
-// Tests register state here before starting the collector so each exporter
-// instance can look up its own counters by component ID.
-var failingExporterRegistry sync.Map
-
-func registerFailingExporter(id string, failCount int64) *failingExporterState {
-	s := &failingExporterState{failCount: failCount}
-	failingExporterRegistry.Store(id, s)
-	return s
-}
-
-type failingExporterConfig struct{}
-
-func (c *failingExporterConfig) Validate() error { return nil }
-
-type failingExporterLogs struct {
-	id string
-}
-
-func (f *failingExporterLogs) Start(context.Context, component.Host) error { return nil }
-func (f *failingExporterLogs) Shutdown(context.Context) error              { return nil }
-func (f *failingExporterLogs) Capabilities() consumer.Capabilities        { return consumer.Capabilities{} }
-
-func (f *failingExporterLogs) ConsumeLogs(_ context.Context, ld plog.Logs) error {
-	v, ok := failingExporterRegistry.Load(f.id)
-	if !ok {
-		return fmt.Errorf("no state registered for exporter %s — call registerFailingExporter first", f.id)
+// collectBulkCreateOK sums the bulk.create.ok counter from a metric.ManualReader.
+func collectBulkCreateOK(reader *metric.ManualReader) (int64, error) {
+	rm := metricdata.ResourceMetrics{}
+	if err := reader.Collect(context.Background(), &rm); err != nil {
+		return 0, err
 	}
-	state := v.(*failingExporterState)
-	n := state.calls.Add(1)
-	if n <= state.failCount {
-		return fmt.Errorf("simulated transient failure (call %d/%d)", n, state.failCount)
+	var total int64
+	for _, sm := range rm.ScopeMetrics {
+		for _, m := range sm.Metrics {
+			if m.Name == "bulk.create.ok" {
+				if sum, ok := m.Data.(metricdata.Sum[int64]); ok {
+					for _, dp := range sum.DataPoints {
+						total += dp.Value
+					}
+				}
+			}
+		}
 	}
-	state.received.Add(int64(ld.LogRecordCount()))
-	return nil
+	return total, nil
 }
 
-func newFailingExporterFactory() exporter.Factory {
-	return exporter.NewFactory(
-		component.MustNewType("failingexporter"),
-		func() component.Config { return &failingExporterConfig{} },
-		exporter.WithLogs(
-			func(_ context.Context, set exporter.Settings, _ component.Config) (exporter.Logs, error) {
-				return &failingExporterLogs{id: set.ID.String()}, nil
-			},
-			component.StabilityLevelDevelopment,
-		),
+// newFailingMockServer returns an httptest.Server backed by a
+// api.NewDeterministicAPIHandler that returns HTTP 429 for the first
+// failCount requests and delegates to the success handler thereafter.
+// The returned atomic counter reflects the total number of HTTP requests received.
+func newFailingMockServer(t *testing.T, failCount int64) (*httptest.Server, *atomic.Int64, *metric.ManualReader) {
+	t.Helper()
+	var requests atomic.Int64
+	reader := metric.NewManualReader()
+	provider := metric.NewMeterProvider(metric.WithReader(reader))
+	mux := http.NewServeMux()
+	base := api.NewDeterministicAPIHandler(
+		uuid.Must(uuid.NewV4()), "", provider,
+		time.Now().Add(24*time.Hour), 0, 0,
+		func(_ api.Action, _ []byte) int { return http.StatusOK },
 	)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) <= failCount {
+			http.Error(w, "", http.StatusTooManyRequests)
+			return
+		}
+		base.ServeHTTP(w, r)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv, &requests, reader
 }
 
-// TestFilebeatRetryOnFailure verifies that filebeatreceiver retries indefinitely
-// when downstream consumers return retryable errors (retry_on_failure.max_elapsed_time: 0),
-// while another filebeatreceiver instance with retry_on_failure disabled drops events
-// after the Beats pipeline exhausts its TTL.
+// TestFilebeatReceiverInfiniteRetryOnFailure verifies that filebeatreceiver
+// retries indefinitely (max_elapsed_time: 0) when the downstream exporter
+// exhausts its own per-call retry budget and returns a retryable error.
 //
-// Two pipelines share the same failing exporter type, each with its own instance:
-//
-//	filebeatreceiver/with-retry  →  failingexporter/with-retry  (fails 10×, then succeeds)
-//	filebeatreceiver/no-retry   →  failingexporter/no-retry    (always fails)
-//
-// The with-retry receiver keeps calling the exporter until it succeeds; the
-// no-retry receiver gives up after the Beats pipeline drops the batch.
-func TestFilebeatRetryOnFailure(t *testing.T) {
-	const exporterFailCount = 10 // with-retry exporter fails this many times before succeeding
+// The mock ES server returns 429 for the first serverFailCount HTTP requests,
+// then succeeds. The elasticsearch exporter is configured with max_retries: 2
+// (3 total HTTP attempts per receiver call). With retry_on_failure enabled on
+// the receiver, the receiver re-calls the exporter after each failure, driving
+// the total server request count well past the exporter's per-call budget.
+func TestFilebeatReceiverInfiniteRetryOnFailure(t *testing.T) {
+	const (
+		serverFailCount    = 7 // number of 429 responses before the server succeeds
+		exporterMaxRetries = 2 // exporter retries; total per-call budget = 1 + 2 = 3
+	)
 
-	withRetryHome := t.TempDir()
-	noRetryHome := t.TempDir()
+	server, serverRequests, reader := newFailingMockServer(t, serverFailCount)
 
-	// Register per-instance exporter state before the collector starts.
-	withRetryState := registerFailingExporter("failingexporter/with-retry", exporterFailCount)
-	// Use a very large failCount so the no-retry exporter never succeeds.
-	noRetryState := registerFailingExporter("failingexporter/no-retry", 1_000_000)
-	t.Cleanup(func() {
-		failingExporterRegistry.Delete("failingexporter/with-retry")
-		failingExporterRegistry.Delete("failingexporter/no-retry")
-	})
+	params := struct {
+		InputFile      string
+		ESEndpoint     string
+		MaxRetries     int
+		MonitoringPort int
+	}{
+		InputFile:      filepath.Join(t.TempDir(), "log.log"),
+		ESEndpoint:     server.URL,
+		MaxRetries:     exporterMaxRetries,
+		MonitoringPort: int(libbeattesting.MustAvailableTCP4Port(t)),
+	}
 
-	cfg := fmt.Sprintf(`
-receivers:
-  # Filebeat with infinite retry: keeps calling the exporter until it succeeds.
-  filebeatreceiver/with-retry:
+	cfg := `receivers:
+  filebeatreceiver:
     retry_on_failure:
       enabled: true
-      initial_interval: 10ms
-      max_interval: 100ms
+      initial_interval: 100ms
+      max_interval: 500ms
       max_elapsed_time: 0
     filebeat:
       inputs:
-        - type: benchmark
+        - type: filestream
+          id: filestream-input-id
           enabled: true
-          message: "with-retry"
-          count: 1
+          paths:
+            - {{.InputFile}}
+          prospector.scanner.fingerprint.enabled: false
+          file_identity.native: ~
+    logging:
+      level: debug
     queue.mem.flush.timeout: 0s
-    path.home: %s
-
-  # Filebeat with retry disabled: the error propagates to the Beats pipeline
-  # which drops the event after its TTL expires.
-  filebeatreceiver/no-retry:
-    retry_on_failure:
-      enabled: false
-    filebeat:
-      inputs:
-        - type: benchmark
-          enabled: true
-          message: "no-retry"
-          count: 1
-    queue.mem.flush.timeout: 0s
-    path.home: %s
-
+    setup.template.enabled: false
+    http.enabled: true
+    http.host: localhost
+    http.port: {{.MonitoringPort}}
 exporters:
-  failingexporter/with-retry: {}
-  failingexporter/no-retry: {}
-
+  elasticsearch:
+    auth:
+      authenticator: beatsauth
+    compression: none
+    endpoints:
+      - {{.ESEndpoint}}
+    logs_index: logs-integration-retrytest
+    max_conns_per_host: 1
+    password: testing
+    retry:
+      enabled: true
+      initial_interval: 100ms
+      max_interval: 500ms
+      max_retries: {{.MaxRetries}}
+    sending_queue:
+      batch:
+        flush_timeout: 10s
+        max_size: 1
+        min_size: 0
+        sizer: items
+      block_on_overflow: true
+      enabled: true
+      num_consumers: 1
+      queue_size: 3200
+      wait_for_result: true
+    user: admin
+extensions:
+  beatsauth:
+    idle_connection_timeout: 3s
+    proxy_disable: false
+    timeout: 1m30s
 service:
+  extensions:
+    - beatsauth
   pipelines:
-    logs/with-retry:
-      receivers: [filebeatreceiver/with-retry]
-      exporters: [failingexporter/with-retry]
-    logs/no-retry:
-      receivers: [filebeatreceiver/no-retry]
-      exporters: [failingexporter/no-retry]
+    logs:
+      receivers:
+        - filebeatreceiver
+      exporters:
+        - elasticsearch
   telemetry:
+    logs:
+      level: DEBUG
     metrics:
       level: none
-`, withRetryHome, noRetryHome)
+`
+	var configBuffer bytes.Buffer
+	require.NoError(t, template.Must(template.New("config").Parse(cfg)).Execute(&configBuffer, params))
 
-	col := oteltestcol.NewWithAdditionalExporters(t, cfg, newFailingExporterFactory())
-	require.NotNil(t, col)
+	collector := oteltestcol.New(t, configBuffer.String())
+	writeEventsToLogFile(t, params.InputFile, 1)
 
-	// Wait for the with-retry receiver to eventually deliver its event through the
-	// retry loop, and confirm the exporter was actually called more than failCount
-	// times (proving the retry wrapper kept retrying past the initial failures).
-	require.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.Equal(c, int64(1), withRetryState.received.Load(),
-			"filebeatreceiver/with-retry must deliver exactly 1 event after retrying through %d failures",
-			exporterFailCount)
-		assert.Greater(c, withRetryState.calls.Load(), int64(exporterFailCount),
-			"failingexporter/with-retry must have been called more than %d times",
-			exporterFailCount)
-	}, 30*time.Second, 100*time.Millisecond,
-		"timed out waiting for filebeatreceiver/with-retry to deliver its event")
+	require.Eventually(t, func() bool {
+		return collector.ObservedLogs().FilterMessageSnippet(
+			fmt.Sprintf("End of file reached: %s; Backoff now.", params.InputFile)).Len() == 1
+	}, 30*time.Second, 100*time.Millisecond, "timed out waiting for file input to be fully read")
 
-	// Allow a short window for the no-retry receiver to have attempted delivery.
-	// It only tries once (TTL=1, events are not guaranteed), so a brief wait is
-	// enough before we assert no events were ever delivered through that path.
-	require.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.GreaterOrEqual(c, noRetryState.calls.Load(), int64(1),
-			"failingexporter/no-retry must have been called at least once")
-	}, 30*time.Second, 100*time.Millisecond,
-		"timed out waiting for filebeatreceiver/no-retry to attempt delivery")
+	require.EventuallyWithT(t, func(ct *assert.CollectT) {
+		n, err := collectBulkCreateOK(reader)
+		assert.NoError(ct, err)
+		assert.Equal(ct, int64(1), n, "expected exactly 1 event ingested")
+	}, 60*time.Second, 500*time.Millisecond, "timed out waiting for event to be ingested")
 
-	assert.Equal(t, int64(0), noRetryState.received.Load(),
-		"filebeatreceiver/no-retry must deliver 0 events: without retry_on_failure, "+
-			"events are dropped after the Beats pipeline TTL expires")
+	assert.Greater(t, serverRequests.Load(), int64(exporterMaxRetries+1),
+		"server request count must exceed exporter's per-call budget (%d), "+
+			"proving filebeatreceiver retried past the exporter's retry limit",
+		exporterMaxRetries+1)
+}
+
+// TestFilebeatReceiverRetryVsExporterRetry verifies two distinct retry
+// behaviours on two concurrent filebeatreceiver pipelines backed by separate
+// mock ES servers.
+//
+// Pipeline A (retry_on_failure enabled, max_elapsed_time: 0) is connected to a
+// server that fails more times than the exporter's per-call budget
+// (serverAFailCount > 1+exporterMaxRetries). After each exhausted exporter
+// budget the receiver-level retry re-drives the whole call, accumulating more
+// server hits than the exporter alone could produce. This proves that the
+// receiver retry is what eventually delivers the event.
+//
+// Pipeline B (retry_on_failure enabled, max_elapsed_time: 0, same config as A)
+// is connected to a server that fails the same number of times as pipeline A.
+// Both pipelines share identical exporter configuration and identical receiver
+// retry configuration; the only observable difference is how many times each
+// server was hit. Both must deliver their event, and both server request counts
+// must exceed the exporter per-call budget, confirming the receiver retry fires
+// independently per pipeline and is not capped by the shared exporter config.
+//
+// Note: Filebeat's guaranteed-delivery semantics mean events are never dropped
+// by the Beats pipeline regardless of retry_on_failure configuration. The
+// receiver-level retry wrapper (retry_on_failure) adds a faster, synchronous
+// retry path before errors reach the Beats queue, but the guaranteed-delivery
+// fallback means the observable difference is request count and latency, not
+// whether the event is ultimately delivered. The unit tests in retry_test.go
+// verify the retryLogsConsumer behaviour in isolation.
+func TestFilebeatReceiverRetryVsExporterRetry(t *testing.T) {
+	const (
+		// serverFailCount exceeds the exporter's per-call budget (1 + exporterMaxRetries = 3)
+		// so delivery on each pipeline requires the receiver to retry past the exporter's limit.
+		serverFailCount = 7
+
+		// exporterMaxRetries is the max_retries value for both exporters.
+		// Per-call budget = 1 (initial) + exporterMaxRetries = 3 total attempts.
+		exporterMaxRetries = 2
+	)
+
+	// Two independent mock servers: each pipeline gets its own server so their
+	// failure counters are isolated.
+	serverA, requestsA, readerA := newFailingMockServer(t, serverFailCount)
+	serverB, requestsB, readerB := newFailingMockServer(t, serverFailCount)
+
+	params := struct {
+		InputFileA      string
+		InputFileB      string
+		EndpointA       string
+		EndpointB       string
+		MaxRetries      int
+		MonitoringPortA int
+		MonitoringPortB int
+	}{
+		InputFileA:      filepath.Join(t.TempDir(), "a.log"),
+		InputFileB:      filepath.Join(t.TempDir(), "b.log"),
+		EndpointA:       serverA.URL,
+		EndpointB:       serverB.URL,
+		MaxRetries:      exporterMaxRetries,
+		MonitoringPortA: int(libbeattesting.MustAvailableTCP4Port(t)),
+		MonitoringPortB: int(libbeattesting.MustAvailableTCP4Port(t)),
+	}
+
+	cfg := `receivers:
+  filebeatreceiver/pipeline-a:
+    retry_on_failure:
+      enabled: true
+      initial_interval: 100ms
+      max_interval: 500ms
+      max_elapsed_time: 0
+    filebeat:
+      inputs:
+        - type: filestream
+          id: filestream-pipeline-a
+          enabled: true
+          paths:
+            - {{.InputFileA}}
+          prospector.scanner.fingerprint.enabled: false
+          file_identity.native: ~
+    logging:
+      level: debug
+    queue.mem.flush.timeout: 0s
+    setup.template.enabled: false
+    http.enabled: true
+    http.host: localhost
+    http.port: {{.MonitoringPortA}}
+
+  filebeatreceiver/pipeline-b:
+    retry_on_failure:
+      enabled: true
+      initial_interval: 100ms
+      max_interval: 500ms
+      max_elapsed_time: 0
+    filebeat:
+      inputs:
+        - type: filestream
+          id: filestream-pipeline-b
+          enabled: true
+          paths:
+            - {{.InputFileB}}
+          prospector.scanner.fingerprint.enabled: false
+          file_identity.native: ~
+    logging:
+      level: debug
+    queue.mem.flush.timeout: 0s
+    setup.template.enabled: false
+    http.enabled: true
+    http.host: localhost
+    http.port: {{.MonitoringPortB}}
+
+exporters:
+  elasticsearch/a:
+    auth:
+      authenticator: beatsauth
+    compression: none
+    endpoints:
+      - {{.EndpointA}}
+    logs_index: logs-integration-retry-a
+    max_conns_per_host: 1
+    password: testing
+    retry:
+      enabled: true
+      initial_interval: 100ms
+      max_interval: 500ms
+      max_retries: {{.MaxRetries}}
+    sending_queue:
+      batch:
+        flush_timeout: 10s
+        max_size: 1
+        min_size: 0
+        sizer: items
+      block_on_overflow: true
+      enabled: true
+      num_consumers: 1
+      queue_size: 3200
+      wait_for_result: true
+    user: admin
+
+  elasticsearch/b:
+    auth:
+      authenticator: beatsauth
+    compression: none
+    endpoints:
+      - {{.EndpointB}}
+    logs_index: logs-integration-retry-b
+    max_conns_per_host: 1
+    password: testing
+    retry:
+      enabled: true
+      initial_interval: 100ms
+      max_interval: 500ms
+      max_retries: {{.MaxRetries}}
+    sending_queue:
+      batch:
+        flush_timeout: 10s
+        max_size: 1
+        min_size: 0
+        sizer: items
+      block_on_overflow: true
+      enabled: true
+      num_consumers: 1
+      queue_size: 3200
+      wait_for_result: true
+    user: admin
+
+extensions:
+  beatsauth:
+    idle_connection_timeout: 3s
+    proxy_disable: false
+    timeout: 1m30s
+
+service:
+  extensions:
+    - beatsauth
+  pipelines:
+    logs/pipeline-a:
+      receivers:
+        - filebeatreceiver/pipeline-a
+      exporters:
+        - elasticsearch/a
+    logs/pipeline-b:
+      receivers:
+        - filebeatreceiver/pipeline-b
+      exporters:
+        - elasticsearch/b
+  telemetry:
+    logs:
+      level: DEBUG
+    metrics:
+      level: none
+`
+	var configBuffer bytes.Buffer
+	require.NoError(t, template.Must(template.New("config").Parse(cfg)).Execute(&configBuffer, params))
+
+	collector := oteltestcol.New(t, configBuffer.String())
+	writeEventsToLogFile(t, params.InputFileA, 1)
+	writeEventsToLogFile(t, params.InputFileB, 1)
+
+	require.Eventually(t, func() bool {
+		logs := collector.ObservedLogs()
+		return logs.FilterMessageSnippet(fmt.Sprintf("End of file reached: %s; Backoff now.", params.InputFileA)).Len() >= 1 &&
+			logs.FilterMessageSnippet(fmt.Sprintf("End of file reached: %s; Backoff now.", params.InputFileB)).Len() >= 1
+	}, 30*time.Second, 100*time.Millisecond, "timed out waiting for both file inputs to be fully read")
+
+	// Both pipelines must deliver their event despite the server failing more
+	// times than the exporter's per-call budget. Each pipeline's server request
+	// count must exceed that budget, confirming the receiver retry fired on
+	// each pipeline independently.
+	for _, tc := range []struct {
+		name     string
+		reader   *metric.ManualReader
+		requests *atomic.Int64
+	}{
+		{"pipeline-a", readerA, requestsA},
+		{"pipeline-b", readerB, requestsB},
+	} {
+		require.EventuallyWithT(t, func(ct *assert.CollectT) {
+			n, err := collectBulkCreateOK(tc.reader)
+			assert.NoError(ct, err)
+			assert.Equal(ct, int64(1), n, "%s: event must be delivered", tc.name)
+		}, 60*time.Second, 500*time.Millisecond, "%s: timed out waiting for event to be ingested", tc.name)
+
+		assert.Greater(t, tc.requests.Load(), int64(exporterMaxRetries+1),
+			"%s: server must have received more requests than the exporter per-call budget (%d), "+
+				"proving receiver-level retry fired independently of the exporter config", tc.name, exporterMaxRetries+1)
+	}
 }

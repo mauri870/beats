@@ -7,7 +7,6 @@ package fbreceiver
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/elastic/beats/v7/filebeat/beater"
 	"github.com/elastic/beats/v7/filebeat/cmd"
@@ -75,12 +74,7 @@ func NewFactoryWithSettings(s Settings) receiver.Factory {
 		component.MustNewType(Name),
 		func() component.Config {
 			return &Config{
-				RetryOnFailure: RetryConfig{
-					Enabled:         true,
-					InitialInterval: 1 * time.Second,
-					MaxInterval:     30 * time.Second,
-					MaxElapsedTime:  0, // infinite — matches Filebeat's guaranteed-delivery semantics
-				},
+				RetryOnFailure: defaultRetryConfig(),
 				Beatconfig: map[string]any{
 					"path": map[string]any{
 						"home": s.Home,

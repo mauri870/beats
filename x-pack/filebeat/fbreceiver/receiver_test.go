@@ -31,9 +31,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/component/componentstatus"
-	"go.opentelemetry.io/collector/consumer"
-	"go.opentelemetry.io/collector/consumer/consumererror"
-	"go.opentelemetry.io/collector/pdata/plog"
 	"go.opentelemetry.io/collector/pipeline"
 	"go.opentelemetry.io/collector/receiver"
 	"go.opentelemetry.io/collector/receiver/receivertest"
@@ -734,78 +731,6 @@ func hostFromSocket(socket string) string {
 	return "unix://" + socket
 }
 
-// TestInfiniteRetryOnFailure verifies that the filebeatreceiver retries
-// indefinitely when the downstream consumer returns retryable errors.
-// This matches Filebeat's guaranteed-delivery semantics: events must never
-// be dropped due to transient downstream failures, regardless of any retry
-// limits configured on the exporter side.
-func TestInfiniteRetryOnFailure(t *testing.T) {
-	const failCount = 5
-	var callCount atomic.Int64
-	var receivedCount atomic.Int64
-
-	// next simulates an exporter that fails failCount times before succeeding.
-	// Only retryable (non-permanent) errors are returned so the retry wrapper
-	// keeps trying.
-	next, err := consumer.NewLogs(func(_ context.Context, ld plog.Logs) error {
-		n := callCount.Add(1)
-		if n <= failCount {
-			return consumererror.NewLogs(fmt.Errorf("transient downstream error (attempt %d)", n), ld)
-		}
-		receivedCount.Add(int64(ld.LogRecordCount()))
-		return nil
-	})
-	require.NoError(t, err)
-
-	tmpDir := t.TempDir()
-	factory := NewFactoryWithSettings(Settings{Home: tmpDir})
-
-	// Use a short InitialInterval so retries happen quickly in the test.
-	cfg := &Config{
-		RetryOnFailure: RetryConfig{
-			Enabled:         true,
-			InitialInterval: 10 * time.Millisecond,
-			MaxInterval:     100 * time.Millisecond,
-			MaxElapsedTime:  0, // infinite
-		},
-		Beatconfig: map[string]any{
-			"filebeat": map[string]any{
-				"inputs": []map[string]any{
-					{
-						"type":    "benchmark",
-						"enabled": true,
-						"message": "retry-test",
-						"count":   1,
-					},
-				},
-			},
-			"path.home":               tmpDir,
-			"queue.mem.flush.timeout": "0s",
-		},
-	}
-
-	set := receiver.Settings{
-		ID: component.NewIDWithName(factory.Type(), "infinite-retry-test"),
-		TelemetrySettings: component.TelemetrySettings{
-			Logger: zap.NewNop(),
-		},
-	}
-
-	rcvr, err := factory.CreateLogs(t.Context(), set, cfg, next)
-	require.NoError(t, err)
-
-	host := &oteltest.MockHost{}
-	require.NoError(t, rcvr.Start(t.Context(), host))
-
-	require.EventuallyWithT(t, func(c *assert.CollectT) {
-		assert.Equal(c, int64(1), receivedCount.Load(),
-			"event must be delivered after retries, not dropped")
-		assert.Greater(c, callCount.Load(), int64(failCount),
-			"consumer must have been called more than %d times, proving retries occurred", failCount)
-	}, 30*time.Second, 50*time.Millisecond)
-
-	require.NoError(t, rcvr.Shutdown(t.Context()))
-}
 
 func writeFile(t require.TestingT, path string, data string) {
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)

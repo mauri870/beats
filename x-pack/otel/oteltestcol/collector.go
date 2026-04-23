@@ -36,7 +36,6 @@ import (
 	"go.opentelemetry.io/collector/component"
 	"go.opentelemetry.io/collector/confmap"
 	"go.opentelemetry.io/collector/confmap/provider/fileprovider"
-	"go.opentelemetry.io/collector/exporter"
 	"go.opentelemetry.io/collector/exporter/debugexporter"
 	"go.opentelemetry.io/collector/otelcol"
 	"go.opentelemetry.io/collector/service/telemetry/otelconftelemetry"
@@ -96,69 +95,6 @@ func New(tb testing.TB, configYAML string) *Collector {
 	}, 10*time.Second, 10*time.Millisecond, "Collector did not start in time")
 
 	return &Collector{collector: col, observer: observer}
-}
-
-// NewWithAdditionalExporters creates and starts a new OTel collector for
-// testing, registering extra exporter factories alongside the standard ones.
-// Use this when a test needs a custom exporter (e.g. a controllable failing
-// exporter) that is not part of the default set.
-func NewWithAdditionalExporters(tb testing.TB, configYAML string, extraExporters ...exporter.Factory) *Collector {
-	tb.Helper()
-
-	configDir := tb.TempDir()
-	configFile := filepath.Join(configDir, "otel.yaml")
-	err := os.WriteFile(configFile, []byte(configYAML), 0o644)
-	require.NoError(tb, err)
-
-	var zapBuf zaptest.Buffer
-	zapCore := zapcore.NewCore(
-		zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()),
-		&zapBuf,
-		zapcore.DebugLevel,
-	)
-	observed, obs := observer.New(zapcore.DebugLevel)
-	core := zapcore.NewTee(zapCore, observed)
-
-	factoriesFn := func() (otelcol.Factories, error) {
-		factories, err := getComponent()
-		if err != nil {
-			return otelcol.Factories{}, err
-		}
-		for _, f := range extraExporters {
-			factories.Exporters[f.Type()] = f
-		}
-		return factories, nil
-	}
-
-	settings := newCollectorSettings("file:"+configFile, core)
-	settings.Factories = factoriesFn
-
-	col, err := otelcol.NewCollector(settings)
-	require.NoError(tb, err)
-
-	var wg sync.WaitGroup
-	tb.Cleanup(func() {
-		col.Shutdown()
-		wg.Wait()
-
-		if tb.Failed() {
-			tb.Log("OTel Collector logs:\n" + zapBuf.String())
-		}
-	})
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		ctx, cancel := signal.NotifyContext(tb.Context(), os.Interrupt)
-		defer cancel()
-		assert.NoError(tb, col.Run(ctx))
-	}()
-
-	require.Eventually(tb, func() bool {
-		return col.GetState() == otelcol.StateRunning
-	}, 10*time.Second, 10*time.Millisecond, "Collector did not start in time")
-
-	return &Collector{collector: col, observer: obs}
 }
 
 func (c *Collector) ObservedLogs() *observer.ObservedLogs {

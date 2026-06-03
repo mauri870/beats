@@ -77,7 +77,7 @@ func newQueue[T any](pool *Pool[T]) *Queue[T] {
 
 // Producer returns a producer that publishes to this queue.
 func (q *Queue[T]) Producer(cfg queue.ProducerConfig) queue.Producer[T] {
-	return &producer[T]{queue: q, cfg: cfg, magazine: make([]int, 0, magazineSize)}
+	return &producer[T]{queue: q, cfg: cfg, magazine: make([]int, 0, magazineMaxCap)}
 }
 
 // Get blocks until at least one event is available (or the queue is closed)

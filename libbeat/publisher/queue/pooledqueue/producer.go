@@ -23,15 +23,9 @@ import (
 	"github.com/elastic/beats/v7/libbeat/publisher/queue"
 )
 
-// magazineSize (M) is the number of slot indices each producer pre-claims from
-// the shared free channel in one bulk receive. The CPU layer's worst-case miss
-// rate against the shared depot is bounded by 1/M regardless of workload
-// (Bonwick & Adams §3.4). M=16 keeps the miss rate ≤6% while bounding the
-// number of slots that can sit idle in a producer that stalls.
-//
-// Reference: Bonwick & Adams, "Magazines and Vmem: Extending the Slab
-// Allocator to Many CPUs and Arbitrary Resources", USENIX 2001, §3 and §3.4.
-const magazineSize = 16
+// magazineMaxCap is the absolute upper bound on slots a single producer may
+// pre-claim from the shared depot regardless of pool capacity.
+const magazineMaxCap = 64
 
 // producer publishes events into one Queue. It acquires a slot from the
 // shared pool's free list (blocking when the pool is empty), writes the event
@@ -40,13 +34,20 @@ const magazineSize = 16
 // Each producer holds a magazine: a small pre-claimed stack of slot indices
 // (Bonwick & Adams §3.1). Publish pops from the magazine without touching the
 // shared pool.free channel; the channel is only accessed to bulk-refill when
-// the magazine runs dry. This mirrors the hot-path described in §3.1c of the
-// paper: "if the CPU's loaded magazine isn't empty, pop the top object and
-// return it."
+// the magazine runs dry.
+//
+// The refill limit is min(len(pool.free)/2, ceiling()) where ceiling is
+// pool.Capacity()/(2*connectedQueues). This is stateless: no hit/miss counters,
+// no grow/shrink logic. The two bounds together guarantee:
+//   - at most half the currently free slots are claimed in one shot (fairness)
+//   - the sum of all magazine caps never exceeds half the pool capacity
+//     regardless of receiver count (starvation prevention).
 type producer[T any] struct {
-	queue    *Queue[T]
-	cfg      queue.ProducerConfig
-	magazine []int // pre-claimed slot indices; drained LIFO before touching pool.free
+	queue          *Queue[T]
+	cfg            queue.ProducerConfig
+	magazine       []int // pre-claimed slot indices; drained LIFO before touching pool.free
+	magazineCeiled int   // cached ceiling; recomputed when connectedQueues changes
+	cachedQueues   int   // connectedQueues value at last ceiling computation
 
 	nextID atomic.Uint64
 	closed atomic.Bool
@@ -65,14 +66,37 @@ func (p *producer[T]) Publish(entry T) (queue.EntryID, bool) {
 	return p.fill(entry, slotIdx)
 }
 
+// ceiling returns the maximum slots this producer may hold in its magazine:
+// pool.Capacity()/(2*connectedQueues), capped at magazineMaxCap. The result
+// is cached and only recomputed when the connected-queue count changes, so
+// the common path (stable receiver count) pays no lock overhead.
+func (p *producer[T]) ceiling() int {
+	pool := p.queue.pool
+	queues := pool.ConnectedQueues()
+	if queues == p.cachedQueues {
+		return p.magazineCeiled
+	}
+	p.cachedQueues = queues
+	if queues == 0 {
+		queues = 1
+	}
+	c := pool.Capacity() / (2 * queues)
+	if c > magazineMaxCap {
+		c = magazineMaxCap
+	}
+	if c < 1 {
+		c = 1
+	}
+	p.magazineCeiled = c
+	return c
+}
+
 // acquireSlot returns a slot index, refilling the magazine from pool.free when
 // it is empty. Returns false if the queue or pool is closed.
 //
-// The refill strategy is a simplified depot interaction (Bonwick & Adams §3.1):
-// first attempt a non-blocking bulk-fill of up to half the currently available
-// slots (capped at magazineSize); if the depot is empty, fall back to a single
-// blocking receive. Capping at half leaves slots for other producers sharing
-// the pool and prevents one producer from starving others on small pools.
+// Refill limit = min(len(pool.free)/2, ceiling()). No state is carried between
+// calls — the two bounds are re-evaluated on each refill from current pool
+// state. This handles any receiver count without counters or thresholds.
 func (p *producer[T]) acquireSlot() (int, bool) {
 	if len(p.magazine) > 0 {
 		idx := p.magazine[len(p.magazine)-1]
@@ -80,38 +104,37 @@ func (p *producer[T]) acquireSlot() (int, bool) {
 		return idx, true
 	}
 
-	// Phase 1: non-blocking bulk-fill from the shared free channel (the depot).
-	// Limit to half the currently visible free slots so we never drain the pool
-	// in one shot. len(pool.free) is a best-effort snapshot; the loop's default
-	// case ensures we stop early if slots were claimed concurrently.
+	// Magazine empty — bulk-fill from the depot. Limit to the smaller of
+	// half the currently visible free slots and the per-producer ceiling.
 	pool := p.queue.pool
 	limit := len(pool.free) / 2
-	if limit > magazineSize {
-		limit = magazineSize
+	if c := p.ceiling(); limit > c {
+		limit = c
 	}
 
-	p.magazine = p.magazine[:cap(p.magazine)] // reuse backing array
-	filled := 0
-fill:
-	for filled < limit {
-		select {
-		case idx := <-pool.free:
-			p.magazine[filled] = idx
-			filled++
-		default:
-			break fill
+	if limit > 0 {
+		p.magazine = p.magazine[:cap(p.magazine)] // reuse pre-allocated backing array
+		filled := 0
+	fill:
+		for filled < limit {
+			select {
+			case idx := <-pool.free:
+				p.magazine[filled] = idx
+				filled++
+			default:
+				break fill
+			}
 		}
+		if filled > 0 {
+			p.magazine = p.magazine[:filled]
+			idx := p.magazine[filled-1]
+			p.magazine = p.magazine[:filled-1]
+			return idx, true
+		}
+		p.magazine = p.magazine[:0]
 	}
 
-	if filled > 0 {
-		p.magazine = p.magazine[:filled]
-		idx := p.magazine[filled-1]
-		p.magazine = p.magazine[:filled-1]
-		return idx, true
-	}
-
-	// Phase 2: depot was empty — block until a slot is available or we close.
-	p.magazine = p.magazine[:0]
+	// Depot was empty — block until a slot is available or we close.
 	select {
 	case idx := <-pool.free:
 		return idx, true
@@ -149,9 +172,9 @@ func (p *producer[T]) TryPublish(entry T) (queue.EntryID, bool) {
 // on CPU offline (Bonwick & Adams §3.5).
 //
 // The sends to pool.free are non-blocking: pool.free has capacity equal to the
-// total slot count, and a producer can hold at most magazineSize slots, so the
-// channel must have room. A full channel would mean more slots are outstanding
-// than exist, which is a bug — panic immediately rather than deadlock.
+// total slot count, and a producer can hold at most magazineMaxCap slots, so
+// the channel must have room. A full channel would mean more slots are
+// outstanding than exist, which is a bug — panic immediately rather than deadlock.
 func (p *producer[T]) Close() {
 	p.closed.Store(true)
 	for _, idx := range p.magazine {

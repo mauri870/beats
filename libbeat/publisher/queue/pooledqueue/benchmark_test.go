@@ -56,8 +56,14 @@ import (
 //
 //   go test -run=^$ -bench=. -benchmem -benchtime=2s ./libbeat/publisher/queue/pooledqueue/...
 
+// benchEventPayloadSize approximates a typical structured log line (JSON key +
+// message + a handful of metadata fields). MB/s figures in the benchmark
+// output are based on this size.
+const benchEventPayloadSize = 512
+
 type benchEvent struct {
-	id int
+	id      int
+	payload [benchEventPayloadSize]byte
 }
 
 // benchPipelines is the set of input/receiver counts we sweep. For memqueue
@@ -166,6 +172,7 @@ func runWorkload(b *testing.B, producers []queue.Producer[benchEvent], consumerQ
 		}()
 	}
 
+	b.SetBytes(int64(benchEventsPerIteration) * benchEventPayloadSize)
 	b.ResetTimer()
 
 	var producerWG sync.WaitGroup

@@ -599,6 +599,7 @@ func TestConcurrentPublishersAndConsumers(t *testing.T) {
 		// Producer.
 		go func(p queue.Producer[int], base int) {
 			defer wg.Done()
+			defer p.Close() // returns any pre-claimed magazine slots to the pool
 			for j := 0; j < eventsPerPipe; j++ {
 				_, ok := p.Publish(base*1000 + j)
 				if !ok {

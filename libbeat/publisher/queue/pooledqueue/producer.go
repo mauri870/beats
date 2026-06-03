@@ -69,9 +69,10 @@ func (p *producer[T]) Publish(entry T) (queue.EntryID, bool) {
 // it is empty. Returns false if the queue or pool is closed.
 //
 // The refill strategy is a simplified depot interaction (Bonwick & Adams §3.1):
-// first attempt a non-blocking bulk-fill of up to magazineSize slots; if the
-// depot is empty, fall back to a single blocking receive. The two phases are
-// kept separate so no blocking can occur inside the non-blocking loop.
+// first attempt a non-blocking bulk-fill of up to half the currently available
+// slots (capped at magazineSize); if the depot is empty, fall back to a single
+// blocking receive. Capping at half leaves slots for other producers sharing
+// the pool and prevents one producer from starving others on small pools.
 func (p *producer[T]) acquireSlot() (int, bool) {
 	if len(p.magazine) > 0 {
 		idx := p.magazine[len(p.magazine)-1]
@@ -80,12 +81,19 @@ func (p *producer[T]) acquireSlot() (int, bool) {
 	}
 
 	// Phase 1: non-blocking bulk-fill from the shared free channel (the depot).
-	// A labeled break exits the for loop from inside the select's default case.
+	// Limit to half the currently visible free slots so we never drain the pool
+	// in one shot. len(pool.free) is a best-effort snapshot; the loop's default
+	// case ensures we stop early if slots were claimed concurrently.
+	pool := p.queue.pool
+	limit := len(pool.free) / 2
+	if limit > magazineSize {
+		limit = magazineSize
+	}
+
 	p.magazine = p.magazine[:cap(p.magazine)] // reuse backing array
 	filled := 0
-	pool := p.queue.pool
 fill:
-	for filled < magazineSize {
+	for filled < limit {
 		select {
 		case idx := <-pool.free:
 			p.magazine[filled] = idx
@@ -171,12 +179,21 @@ func (p *producer[T]) fill(entry T, slotIdx int) (queue.EntryID, bool) {
 	q := p.queue
 	q.mu.Lock()
 	if q.closing {
-		// Queue closed between acquire and fill. Return the slot.
+		// Queue closed between acquire and fill. Return the current slot and
+		// the entire magazine — this producer will not publish again.
 		var zero T
 		s.event = zero
 		s.producer = nil
 		q.mu.Unlock()
 		pool.free <- slotIdx
+		for _, idx := range p.magazine {
+			select {
+			case pool.free <- idx:
+			default:
+				panic("pooledqueue: pool.free full draining magazine on queue close — slot accounting invariant violated")
+			}
+		}
+		p.magazine = p.magazine[:0]
 		return 0, false
 	}
 	if q.tail == -1 {

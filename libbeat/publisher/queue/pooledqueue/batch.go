@@ -77,25 +77,28 @@ func (b *batch[T]) FreeEntries() {
 func (b *batch[T]) Done() {
 	pool := b.queue.pool
 
+	// Reuse the ackProducers/ackCounts slices from the previous cycle so we
+	// don't allocate on the hot path. Reset length but keep capacity.
+	b.ackProducers = b.ackProducers[:0]
+	b.ackCounts = b.ackCounts[:0]
+
 	// Walk slots: collect per-producer counts, clear slot state. Most batches
 	// come from a single producer so the linear search stays small.
 	var zero T
-	var ackProducers []*producer[T]
-	var ackCounts []int
 	for _, i := range b.indices {
 		s := &pool.storage[i]
 		if s.producer != nil {
 			found := false
-			for j, p := range ackProducers {
+			for j, p := range b.ackProducers {
 				if p == s.producer {
-					ackCounts[j]++
+					b.ackCounts[j]++
 					found = true
 					break
 				}
 			}
 			if !found {
-				ackProducers = append(ackProducers, s.producer)
-				ackCounts = append(ackCounts, 1)
+				b.ackProducers = append(b.ackProducers, s.producer)
+				b.ackCounts = append(b.ackCounts, 1)
 			}
 		}
 		if !b.freed {
@@ -112,11 +115,6 @@ func (b *batch[T]) Done() {
 	for _, i := range b.indices {
 		pool.free <- i
 	}
-
-	// Mark this batch ready and harvest the contiguous prefix of done
-	// batches from the front of the queue's pending list.
-	b.ackProducers = ackProducers
-	b.ackCounts = ackCounts
 
 	q := b.queue
 	q.mu.Lock()
@@ -143,31 +141,43 @@ func (b *batch[T]) Done() {
 	forced := q.forced.Load()
 	q.mu.Unlock()
 
-	// Slots are already back in the pool above; the remaining work is
-	// invoking producer ACK callbacks for any batches whose turn in the
-	// publish-order FIFO has come up.
-	//
-	// Suppress ACK callbacks once the queue has been force-closed.
-	// Force-close means the caller explicitly abandoned in-flight events
-	// (Close(true) released FIFO slots without acking them); reporting
-	// ACKs for the parallel set of in-flight batches that were already
-	// out at workers would be inconsistent and could mislead
-	// order-sensitive consumers (e.g. filestream's registry tracker).
-	// This matches memqueue's behaviour: its ackLoop exits on force-
-	// close and no further producer ACK callbacks fire.
+	// Suppress ACK callbacks once the queue has been force-closed and return
+	// swept batches to the pool.
 	if forced {
+		for ab := toAckHead; ab != nil; {
+			next := ab.next
+			ab.resetForPool()
+			q.batchPool.Put(ab)
+			ab = next
+		}
 		return
 	}
 
-	// Invoke ACK callbacks outside the lock in publish (Get) order. A
-	// callback that re-publishes through this queue will be free to take the
-	// pool/queue locks without deadlocking us. The drained batches are no
-	// longer reachable from the queue, so visiting them here is safe.
-	for ab := toAckHead; ab != nil; ab = ab.next {
+	// Invoke ACK callbacks outside the lock in publish (Get) order, then
+	// return each swept batch to the pool. A callback that re-publishes
+	// through this queue can take pool/queue locks without deadlocking us.
+	for ab := toAckHead; ab != nil; {
+		next := ab.next
 		for i, p := range ab.ackProducers {
 			if p.cfg.ACK != nil {
 				p.cfg.ACK(ab.ackCounts[i])
 			}
 		}
+		ab.resetForPool()
+		q.batchPool.Put(ab)
+		ab = next
 	}
+}
+
+// resetForPool clears the batch's mutable state so it is safe to return to
+// batchPool. Slice backing arrays are kept to avoid reallocating on the next
+// Get cycle — only lengths are reset.
+func (b *batch[T]) resetForPool() {
+	b.queue = nil
+	b.freed = false
+	b.next = nil
+	b.done = false
+	b.indices = b.indices[:0]
+	b.ackProducers = b.ackProducers[:0]
+	b.ackCounts = b.ackCounts[:0]
 }

@@ -46,6 +46,12 @@ type Queue[T any] struct {
 	// this list drains.
 	pendingHead, pendingTail *batch[T]
 
+	// batchPool recycles *batch[T] objects — including their indices,
+	// ackProducers, and ackCounts slice backing arrays — across Get/Done
+	// cycles. This eliminates the two per-Get heap allocations that dominate
+	// the memory profile (make([]int) for indices and &batch{} itself).
+	batchPool sync.Pool
+
 	// notify wakes Get when new events arrive.
 	notify chan struct{}
 
@@ -57,7 +63,7 @@ type Queue[T any] struct {
 }
 
 func newQueue[T any](pool *Pool[T]) *Queue[T] {
-	return &Queue[T]{
+	q := &Queue[T]{
 		pool:    pool,
 		head:    -1,
 		tail:    -1,
@@ -65,6 +71,8 @@ func newQueue[T any](pool *Pool[T]) *Queue[T] {
 		closeCh: make(chan struct{}),
 		doneCh:  make(chan struct{}),
 	}
+	q.batchPool.New = func() any { return &batch[T]{} }
+	return q
 }
 
 // Producer returns a producer that publishes to this queue.
@@ -83,10 +91,16 @@ func (q *Queue[T]) Get(maxEvents int) (queue.Batch[T], error) {
 			if maxEvents > 0 && maxEvents < n {
 				n = maxEvents
 			}
-			indices := make([]int, 0, n)
+			b := q.batchPool.Get().(*batch[T])
+			b.queue = q
+			if cap(b.indices) >= n {
+				b.indices = b.indices[:n]
+			} else {
+				b.indices = make([]int, n)
+			}
 			cur := q.head
 			for i := 0; i < n; i++ {
-				indices = append(indices, cur)
+				b.indices[i] = cur
 				cur = q.pool.storage[cur].next
 			}
 			q.head = cur
@@ -94,7 +108,6 @@ func (q *Queue[T]) Get(maxEvents int) (queue.Batch[T], error) {
 				q.tail = -1
 			}
 			q.count -= n
-			b := &batch[T]{queue: q, indices: indices}
 			if q.pendingTail != nil {
 				q.pendingTail.next = b
 			} else {

@@ -195,7 +195,7 @@ func (p *producer[T]) fill(entry T, slotIdx int) (queue.EntryID, bool) {
 	pool := p.queue.pool
 	s := &pool.storage[slotIdx]
 	s.event = entry
-	s.next = -1
+	pool.next[slotIdx] = -1
 	s.producer = p
 	s.producerID = id
 
@@ -222,7 +222,7 @@ func (p *producer[T]) fill(entry T, slotIdx int) (queue.EntryID, bool) {
 	if q.tail == -1 {
 		q.head = slotIdx
 	} else {
-		pool.storage[q.tail].next = slotIdx
+		pool.next[q.tail] = int32(slotIdx)
 	}
 	q.tail = slotIdx
 	q.count++

@@ -105,7 +105,7 @@ func (b *batch[T]) Done() {
 			s.event = zero
 		}
 		s.producer = nil
-		s.next = -1
+		pool.next[i] = -1
 	}
 
 	// Return slots to the pool before doing anything else so blocked

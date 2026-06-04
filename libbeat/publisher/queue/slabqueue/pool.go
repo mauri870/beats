@@ -23,13 +23,11 @@ import (
 	"github.com/elastic/beats/v7/libbeat/publisher/queue"
 )
 
-// slot stores one event and the per-pipeline linked-list metadata used to
-// thread events from the same pipeline together. The actual FIFO heads/tails
-// live on each Queue; this struct just carries the "next" link plus the
-// producer needed for ACK callbacks.
+// slot stores one event and the per-slot ACK metadata. The FIFO link (next
+// slot index) lives in Pool.next — a separate dense []int32 array — so that
+// linked-list traversal touches only compact integer data, not event payloads.
 type slot[T any] struct {
 	event      T
-	next       int // index of the next slot in the owning pipeline's FIFO, or -1
 	producer   *producer[T]
 	producerID uint64
 }
@@ -43,7 +41,11 @@ type Pool[T any] struct {
 	observer queue.Observer
 
 	storage []slot[T]
-	free    chan int
+	// next is the per-slot linked-list link: next[i] is the index of the slot
+	// following slot i in a pipeline's FIFO, or -1 for "no successor". Kept
+	// separate from storage so traversal reads only this dense int32 array.
+	next []int32
+	free chan int
 
 	closeOnce sync.Once
 	closed    chan struct{}
@@ -82,10 +84,15 @@ func NewPool[T any](settings Settings, observer queue.Observer) *Pool[T] {
 		observer = queue.NewQueueObserver(nil) // nilObserver
 	}
 
+	next := make([]int32, settings.Events)
+	for i := range next {
+		next[i] = -1
+	}
 	p := &Pool[T]{
 		settings: settings,
 		observer: observer,
 		storage:  make([]slot[T], settings.Events),
+		next:     next,
 		free:     make(chan int, settings.Events),
 		closed:   make(chan struct{}),
 		queues:   make(map[*Queue[T]]struct{}),

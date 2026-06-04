@@ -99,7 +99,8 @@ func (q *Queue[T]) Get(maxEvents int) (queue.Batch[T], error) {
 			cur := q.head
 			for i := 0; i < n; i++ {
 				b.indices = append(b.indices, cur)
-				cur = q.pool.storage[cur].next
+				cur = int(q.pool.next[cur])
+
 			}
 			q.head = cur
 			if cur == -1 {
@@ -166,7 +167,7 @@ func (q *Queue[T]) Close(force bool) error {
 			cur := q.head
 			for cur != -1 {
 				releaseIndices = append(releaseIndices, cur)
-				cur = q.pool.storage[cur].next
+				cur = int(q.pool.next[cur])
 			}
 			q.head = -1
 			q.tail = -1
@@ -193,7 +194,7 @@ func (q *Queue[T]) Close(force bool) error {
 		for _, i := range releaseIndices {
 			q.pool.storage[i].event = zero
 			q.pool.storage[i].producer = nil
-			q.pool.storage[i].next = -1
+			q.pool.next[i] = -1
 		}
 		q.pool.observer.RemoveEvents(len(releaseIndices), 0)
 		for _, i := range releaseIndices {
